@@ -1,0 +1,7 @@
+// SPDX-FileCopyrightText: 2026 Skye Soss <skye@soss.website>
+//
+// SPDX-License-Identifier: BSD-2-Clause
+
+fn main() {
+    println!("Hello, world!");
+}

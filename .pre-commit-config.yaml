@@ -1,0 +1,33 @@
+# SPDX-FileCopyrightText: 2026 Skye Soss <skye@soss.website>
+#
+# SPDX-License-Identifier: BSD-2-Clause
+
+# https://pre-commit.com
+
+repos:
+  - repo: https://github.com/pre-commit/pre-commit-hooks
+    rev: v6.0.0
+    hooks:
+      - id: trailing-whitespace
+      - id: end-of-file-fixer
+      - id: check-yaml
+      - id: check-added-large-files
+
+  - repo: local
+    hooks:
+      - id: editorconfig-checker
+        name: Editorconfig Checker
+        entry: editorconfig-checker
+        language: unsupported
+
+      - id: treefmt
+        name: Treefmt multiplexer
+        entry: treefmt --fail-on-change
+        language: unsupported
+        pass_filenames: false
+
+      - id: reuse
+        name: Reuse linter
+        entry: reuse lint
+        language: unsupported
+        pass_filenames: false
