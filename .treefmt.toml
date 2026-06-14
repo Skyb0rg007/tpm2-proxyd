@@ -1,0 +1,13 @@
+# SPDX-FileCopyrightText: 2026 Skye Soss <skye@soss.website>
+#
+# SPDX-License-Identifier: BSD-2-Clause
+
+# https://github.com/numtide/treefmt
+
+[formatter.nixfmt]
+command = "nixfmt"
+includes = [ "*.nix" ]
+
+[formatter.rustfmt]
+command = "rustfmt"
+includes = [ "*.rs" ]
