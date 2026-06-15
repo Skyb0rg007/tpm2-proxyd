@@ -2,9 +2,11 @@
 //
 // SPDX-License-Identifier: BSD-2-Clause
 
-//! Varlink (`zlink`) management interface.
+//! Control methods of the `website.soss.Tpm2Proxyd` Varlink interface.
 //!
-//! Exposes runtime control and inspection over a separate Varlink socket —
-//! e.g. reloading the [`crate::policy`] ruleset, reporting status, and listing
-//! active downstream connections. This is the administrative surface and is
-//! kept distinct from the downstream TPM data path served by [`crate::server`].
+//! Implements the administrative/inspection methods — e.g. reloading the
+//! [`crate::policy`] ruleset, reporting status, and listing active connections —
+//! using `zlink`. These share the daemon's single socket with the TPM-access
+//! method; [`crate::server`] owns the socket and routes control calls here,
+//! while an access call (`RequestTpmAccess`) upgrades the connection to the raw
+//! TPM data path instead.
