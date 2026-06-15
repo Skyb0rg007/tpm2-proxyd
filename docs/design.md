@@ -70,6 +70,21 @@ Once a connection has upgraded, each TPM command flows through:
   connection's requested priority (see below).
 - `upstream` is the single, serialized transport to the physical TPM.
 
+### Access policy
+
+The initial policy engine is implemented as ordered, first-match rules. Rules
+can select a UID, a primary or supplementary GID, and one or more TPM command
+codes; an empty command-code list matches every command. The policy defaults to
+deny when no command rule matches.
+
+Connection priority is bounded separately by ordered UID/GID cap rules. The cap
+is applied once when a client is admitted, so the effective priority remains
+fixed for the connection lifetime. The active policy can be atomically replaced;
+subsequent commands use the replacement policy, while already admitted
+connections retain their previously capped priority.
+
+Handle-specific command rules remain future work.
+
 ## Scheduling: the TPM is a shared, serial resource
 
 A TPM processes **one command at a time**. Every downstream client ultimately

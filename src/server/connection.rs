@@ -15,7 +15,9 @@ use std::{future::Future, io};
 use tokio::io::{AsyncRead, AsyncWrite, AsyncWriteExt};
 
 use crate::{
-    scheduler::{CommandScheduler, ExecuteError, Priority},
+    broker::{Broker, BrokerError, Client},
+    scheduler::Priority,
+    server::peer::Peer,
     tpm::{self, Command, Response},
 };
 
@@ -52,8 +54,10 @@ where
 pub struct Accepted<S> {
     /// Connected client transport.
     pub stream: S,
-    /// Scheduling priority assigned during admission.
-    pub priority: Priority,
+    /// Authenticated identity used for policy decisions.
+    pub peer: Peer,
+    /// Scheduling priority requested by the client.
+    pub requested_priority: Priority,
 }
 
 /// Abstract source of admitted client connections.
@@ -96,13 +100,21 @@ impl TokioListener for tokio::net::TcpListener {
 /// and assign a different priority to each accepted stream.
 pub struct RawListener<L> {
     inner: L,
-    priority: Priority,
+    peer: Peer,
+    requested_priority: Priority,
 }
 
 impl<L> RawListener<L> {
-    /// Wrap `inner`, assigning `priority` to every accepted connection.
-    pub fn new(inner: L, priority: Priority) -> Self {
-        Self { inner, priority }
+    /// Wrap `inner`, assigning the supplied admission context to every client.
+    ///
+    /// This is intended for trusted/local raw listeners. Transports that
+    /// authenticate each peer should implement [`Listener`] directly.
+    pub fn new(inner: L, peer: Peer, requested_priority: Priority) -> Self {
+        Self {
+            inner,
+            peer,
+            requested_priority,
+        }
     }
 
     /// Recover the wrapped listener.
@@ -120,18 +132,20 @@ where
     async fn accept(&mut self) -> io::Result<Accepted<Self::Stream>> {
         Ok(Accepted {
             stream: self.inner.accept_stream().await?,
-            priority: self.priority,
+            peer: self.peer.clone(),
+            requested_priority: self.requested_priority,
         })
     }
 }
 
 /// Accept clients forever and run each connection in its own task.
 ///
-/// Client tasks only parse, enqueue, and return responses. The
-/// [`CommandScheduler`] worker remains the sole owner of the upstream TCTI.
+/// Client tasks only parse, authorize, enqueue, and return responses. The
+/// scheduler worker behind [`Broker`] remains the sole owner of the upstream
+/// TCTI.
 pub async fn serve_listener<L>(
     mut listener: L,
-    scheduler: CommandScheduler,
+    broker: Broker,
     max_command_size: usize,
 ) -> io::Result<()>
 where
@@ -139,16 +153,9 @@ where
 {
     loop {
         let accepted = listener.accept().await?;
-        let scheduler = scheduler.clone();
+        let client = broker.admit(accepted.peer, accepted.requested_priority);
         tokio::spawn(async move {
-            if let Err(error) = serve_connection(
-                accepted.stream,
-                accepted.priority,
-                scheduler,
-                max_command_size,
-            )
-            .await
-            {
+            if let Err(error) = serve_connection(accepted.stream, client, max_command_size).await {
                 tracing::debug!(%error, "downstream TPM connection closed with an error");
             }
         });
@@ -158,15 +165,14 @@ where
 /// Serve commands from one admitted client until EOF or failure.
 pub async fn serve_connection<S>(
     mut stream: S,
-    priority: Priority,
-    scheduler: CommandScheduler,
+    client: Client,
     max_command_size: usize,
 ) -> Result<(), ConnectionError>
 where
     S: ClientStream,
 {
     while let Some(command) = stream.read_command(max_command_size).await? {
-        let response = scheduler.execute(priority, command).await?;
+        let response = client.execute(command).await?;
         stream.write_response(&response).await?;
     }
     Ok(())
@@ -178,9 +184,9 @@ pub enum ConnectionError {
     /// Downstream transport or packet framing failed.
     #[error("downstream I/O failed: {0}")]
     Io(#[from] io::Error),
-    /// The scheduler or upstream TCTI failed.
+    /// Policy, scheduler, or upstream TCTI rejected the command.
     #[error("TPM command failed: {0}")]
-    Execute(#[from] ExecuteError),
+    Broker(#[from] BrokerError),
 }
 
 #[cfg(test)]
@@ -190,6 +196,9 @@ mod tests {
     use tokio::io::{AsyncReadExt, AsyncWriteExt};
 
     use crate::{
+        broker::Broker,
+        policy::{Policy, PolicyConfig},
+        scheduler::CommandScheduler,
         tpm::{DEFAULT_MAX_PACKET_SIZE, HEADER_SIZE},
         upstream::{Upstream, UpstreamError},
     };
@@ -236,12 +245,13 @@ mod tests {
             },
             8,
         );
+        let broker = Broker::new(Policy::allow_all(), scheduler);
+        let client_context = broker.admit(Peer::new(1000, 100), Priority(4));
         let (mut client, server) = tokio::io::duplex(256);
 
         let server_task = tokio::spawn(serve_connection(
             server,
-            Priority(4),
-            scheduler,
+            client_context,
             DEFAULT_MAX_PACKET_SIZE,
         ));
 
@@ -253,5 +263,34 @@ mod tests {
 
         server_task.await.unwrap().unwrap();
         assert_eq!(*commands.lock().unwrap(), [0x17b, 0x17a]);
+    }
+
+    #[tokio::test]
+    async fn denied_command_is_not_forwarded() {
+        let commands = Arc::new(Mutex::new(Vec::new()));
+        let scheduler = CommandScheduler::start(
+            EchoUpstream {
+                commands: commands.clone(),
+            },
+            8,
+        );
+        let broker = Broker::new(Policy::new(PolicyConfig::default()), scheduler);
+        let client_context = broker.admit(Peer::new(1000, 100), Priority(4));
+        let (mut client, server) = tokio::io::duplex(256);
+
+        let server_task = tokio::spawn(serve_connection(
+            server,
+            client_context,
+            DEFAULT_MAX_PACKET_SIZE,
+        ));
+
+        client.write_all(&command(0x17b)).await.unwrap();
+        assert!(matches!(
+            server_task.await.unwrap(),
+            Err(ConnectionError::Broker(BrokerError::Denied {
+                command_code: 0x17b
+            }))
+        ));
+        assert!(commands.lock().unwrap().is_empty());
     }
 }
