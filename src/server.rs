@@ -19,4 +19,4 @@
 /// Post-upgrade per-connection handling: raw TPM command/response streaming.
 pub(crate) mod connection;
 /// Peer credential (uid/gid/pid) resolution from the connected socket.
-mod peer;
+pub(crate) mod peer;

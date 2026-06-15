@@ -2,9 +2,37 @@
 //
 // SPDX-License-Identifier: BSD-2-Clause
 
-//! Peer credential resolution.
+//! Transport-independent peer identity.
 //!
-//! Reads the connected Unix socket's `SO_PEERCRED` (uid/gid/pid) to identify
-//! the calling user. This identity is the subject of every [`crate::policy`]
-//! decision, so it is established once at accept time and attached to the
-//! connection.
+//! Unix listeners populate this from `SO_PEERCRED` and supplementary group
+//! lookup. Other transports can provide an authenticated identity during their
+//! own admission handshake.
+
+#![allow(dead_code)] // Unix credential extraction is wired in with the listener.
+
+/// Identity used by policy decisions.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Peer {
+    /// Unix user ID.
+    pub uid: u32,
+    /// Unix primary group ID.
+    pub primary_gid: u32,
+    /// Unix supplementary group IDs.
+    pub supplementary_gids: Vec<u32>,
+}
+
+impl Peer {
+    /// Construct a peer with no supplementary groups.
+    pub fn new(uid: u32, primary_gid: u32) -> Self {
+        Self {
+            uid,
+            primary_gid,
+            supplementary_gids: Vec::new(),
+        }
+    }
+
+    /// Return whether the peer belongs to `gid`.
+    pub fn belongs_to(&self, gid: u32) -> bool {
+        self.primary_gid == gid || self.supplementary_gids.contains(&gid)
+    }
+}
