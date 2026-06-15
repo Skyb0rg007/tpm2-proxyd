@@ -2,13 +2,17 @@
 //
 // SPDX-License-Identifier: BSD-2-Clause
 
-//! Per-client connection handling.
+//! Post-upgrade per-connection handling.
 //!
-//! Reads the raw, self-framing TPM command byte stream from a downstream client
-//! (the 10-byte header carries the total size), dispatches each command through
-//! the [`crate::broker`] for the connection's peer, and writes the response
-//! back. This mirrors the wire protocol implemented by the `tss2-tcti-proxy`
-//! client module and runs until the client disconnects. Because the broker
-//! schedules upstream access ([`crate::scheduler`]), a request may block here
-//! while waiting for the connection's TPM time slice; a command that exceeds the
-//! hard time limit fails and typically ends the connection.
+//! Once [`crate::server`] has upgraded a connection (the client's
+//! `RequestTpmAccess` call succeeded), the socket no longer speaks Varlink: it
+//! carries a raw, self-framing TPM command byte stream (the 10-byte header
+//! carries the total size). This module reads each command, dispatches it
+//! through the [`crate::broker`] for the connection's peer and requested
+//! priority, and writes the response back, mirroring the wire protocol the
+//! `tss2-tcti-proxy` client module drives after its own upgrade handshake.
+//!
+//! It runs until the client disconnects. Because the broker schedules upstream
+//! access ([`crate::scheduler`]), a request may block here while waiting for the
+//! TPM lease; a command that exceeds the hard time limit fails and typically
+//! ends the connection.

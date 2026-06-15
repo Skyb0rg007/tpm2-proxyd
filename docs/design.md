@@ -12,23 +12,57 @@ clients and an upstream TCTI (the kernel resource manager `/dev/tpmrm0` or
 access/permission policy, and forwards allowed commands upstream. It is **not**
 a resource manager: it does not virtualize transient objects or sessions.
 
+## Transport: a single Varlink socket
+
+The daemon exposes exactly **one** socket: a Varlink socket at
+`/run/tpm2-proxyd/website.soss.Tpm2Proxyd`, implementing the
+`website.soss.Tpm2Proxyd` interface. Both administration and TPM access happen
+over this one socket — there is no separate raw byte-stream socket.
+
+It serves two kinds of traffic:
+
+1. **Control methods** — ordinary Varlink calls for administration and
+   inspection (status, reloading policy, listing active clients, …), handled by
+   `management`. A client that only issues control methods never touches the TPM
+   data path.
+2. **TPM access** — a client calls the access method, e.g.
+   `RequestTpmAccess(priority: <level>)`, with the Varlink `upgrade: true` flag.
+   On success the server replies and then **upgrades** the connection: Varlink
+   message framing is dropped and the socket becomes a raw, self-framing TPM
+   command/response stream for the rest of its life (the 10-byte TPM header
+   carries the length). This upgraded connection is what the downstream
+   `tss2-tcti-proxy` module drives.
+
+Requesting access explicitly — with a priority — before upgrading means the
+server learns the client's intent and scheduling priority up front and pairs it
+with the peer identity (`SO_PEERCRED`, read from the connected socket) for policy
+and scheduling decisions.
+
 ## Request pipeline
 
+Once a connection has upgraded, each TPM command flows through:
+
 ```text
-  client ──unix socket──▶ server ──▶ broker ──inspect────▶ tpm
-                                        │
-                                        ├──authorize──────▶ policy
-                                        │
-                                        ├──acquire slice──▶ scheduler
-                                        │
-                                        └──forward────────▶ upstream ──▶ TPM
+  upgraded ──▶ server ──▶ broker ──inspect──────────▶ tpm
+  connection                 │
+                             ├──authorize──────────▶ policy
+                             │
+                             ├──acquire (priority)─▶ scheduler
+                             │
+                             └──forward────────────▶ upstream ──▶ TPM
 ```
 
-- `server` owns the downstream Unix socket, per-connection framing, and peer
-  identity (`SO_PEERCRED`).
+- `server` owns the single Varlink socket: it accepts connections, dispatches
+  control methods to `management`, performs the upgrade on an access request, and
+  then runs the per-connection raw TPM stream. Peer identity comes from
+  `SO_PEERCRED`.
+- `management` implements the control methods of the `website.soss.Tpm2Proxyd`
+  interface.
 - `broker` runs the per-command pipeline and owns shared state.
-- `policy` answers allow/deny for a `(peer, command)`.
-- `scheduler` decides *when* an allowed command may run (see below).
+- `policy` answers allow/deny for a `(peer, command)` and bounds the priority a
+  peer may request.
+- `scheduler` decides *when* an allowed command may run, honoring the
+  connection's requested priority (see below).
 - `upstream` is the single, serialized transport to the physical TPM.
 
 ## Scheduling: the TPM is a shared, serial resource
@@ -68,17 +102,23 @@ hold a **TPM lease** to transmit a command:
 
 - **Mutual exclusion.** Exactly one lease exists; holding it grants exclusive
   use of `upstream`. Released after the response (or timeout).
-- **Wait queue + fairness.** Clients blocked on the lease wait in a queue
-  ordered by a configurable policy (FIFO initially; weighted fair-share across
-  UIDs is the intended target so no single user dominates).
+- **Wait queue + priority + fairness.** Clients blocked on the lease wait in a
+  queue ordered first by the **priority** the connection requested at
+  `RequestTpmAccess` time, then by a configurable fairness policy within a
+  priority band (FIFO initially; weighted fair-share across UIDs is the intended
+  target so no single user dominates its band). The requested priority is fixed
+  for the life of the upgraded connection and is capped by `policy` per
+  user/group, so a client cannot simply demand top priority.
 - **Time-slice accounting.** The scheduler measures wall-clock time each client
   holds the lease. When a client's slice is exhausted it must go to the back of
   the queue before its next command, letting others make progress. A lease may
   span several quick commands within one slice to preserve continuity for
   clients with an active auth/HMAC session.
-- **Time limits / quotas.** Per-UID budgets over a rolling window throttle
-  (delay) or reject (synthesized `TPM_RC` "yielded"/busy response via `tpm`)
-  clients that exceed their fair share, independent of momentary contention.
+- **Time limits / quotas.** Per-UID budgets over an accounting window reject
+  (synthesized `TPM_RC` "yielded"/busy response via `tpm`) clients that exceed
+  their fair share, independent of momentary contention. The initial
+  implementation uses a tumbling window (the budget resets when the window
+  lapses); a denial reports when the window next resets.
 - **Watchdog.** A background task enforces the hard per-command timeout and
   reclaims a lease whose holder died or stalled.
 
@@ -88,11 +128,12 @@ hold a **TPM lease** to transmit a command:
 
 - time-slice duration (per lease holder),
 - hard per-command timeout (hang protection),
-- per-UID quota and its rolling-window length,
-- scheduling/fairness policy selection.
+- per-UID quota and its window length,
+- scheduling/fairness policy selection,
+- the maximum priority each user/group may request at `RequestTpmAccess`.
 
 Limits may be overridable per user/group so trusted services can be given larger
-slices or higher quotas than ordinary interactive clients.
+slices, higher quotas, or higher priority than ordinary interactive clients.
 
 ### Interaction with upstream connection mapping
 

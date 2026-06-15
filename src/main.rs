@@ -4,30 +4,32 @@
 
 //! `tpm2-proxyd` — the TPM2 Proxy Broker daemon.
 //!
-//! The daemon sits between downstream TCTI clients and an upstream TCTI: it
-//! reads raw TPM commands from clients, inspects them, enforces a configurable
-//! per-user access/permission policy, and forwards allowed commands upstream to
-//! the physical TPM's resource manager. See `CLAUDE.md` for the big picture and
-//! the per-module docs below for each component's responsibility.
+//! The daemon sits between downstream TCTI clients and an upstream TCTI. It
+//! exposes a single Varlink socket (`/run/tpm2-proxyd/website.soss.Tpm2Proxyd`)
+//! that serves both control methods and a TPM-access method; the latter uses the
+//! Varlink `upgrade` flag to turn the connection into a raw TPM command stream.
+//! It then inspects each command, enforces a configurable per-user
+//! access/permission policy, and forwards allowed commands upstream to the
+//! physical TPM's resource manager. See `CLAUDE.md` and `docs/design.md`.
 //!
 //! The TPM is a serial, shared resource (one command at a time), so the broker
-//! must also schedule client access — fair time slices and hard time limits —
-//! before forwarding upstream. See `docs/design.md`.
+//! must also schedule client access — by requested priority, with fair time
+//! slices and hard time limits — before forwarding upstream.
 //!
-//! Request flow:
+//! Request flow (after a connection has upgraded):
 //!
 //! ```text
-//!   client ──unix socket──▶ server ──▶ broker ──inspect──────▶ tpm
-//!                                          │
-//!                                          ├──authorize──────▶ policy
-//!                                          │
-//!                                          ├──acquire slice──▶ scheduler
-//!                                          │
-//!                                          └──forward────────▶ upstream ──▶ TPM
+//!   client ──varlink socket──▶ server ──▶ broker ──inspect──────────▶ tpm
+//!     (RequestTpmAccess           │           │
+//!      + upgrade)                 │           ├──authorize──────────▶ policy
+//!     then raw TPM stream         │           ├──acquire (priority)─▶ scheduler
+//!                                 │           └──forward────────────▶ upstream ──▶ TPM
+//!                                 └──control methods──▶ management
 //! ```
 //!
-//! `cli` and `config` supply settings, `management` exposes a Varlink control
-//! interface, and `error`/`logging` are cross-cutting concerns.
+//! `cli` and `config` supply settings, `management` implements the control
+//! methods of the Varlink interface, and `error`/`logging` are cross-cutting
+//! concerns.
 
 /// Core proxy pipeline and shared runtime state: inspect → authorize → forward.
 mod broker;
