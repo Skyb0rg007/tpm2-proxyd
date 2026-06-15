@@ -10,11 +10,11 @@
 //! `website.soss.Tpm2Proxyd` Varlink interface, routing control methods to
 //! [`crate::management`].
 //!
-//! When a client calls the access method (`RequestTpmAccess`) with the Varlink
-//! `upgrade: true` flag, the server authorizes it via [`crate::broker`], sends
-//! the reply, and then **upgrades** the connection: it stops speaking Varlink
-//! and hands the raw socket to [`connection`], which streams TPM commands for
-//! the rest of the connection's life. See `docs/design.md`.
+//! Once a transport has admitted a TPM client, [`connection`] parses its
+//! self-framing TPM command stream and submits commands to
+//! [`crate::scheduler::CommandScheduler`]. The listener API is transport
+//! independent and supports raw Unix/TCP sockets now, with a future Varlink
+//! upgrade handoff able to implement the same interface. See `docs/design.md`.
 
 /// Post-upgrade per-connection handling: raw TPM command/response streaming.
 mod connection;
