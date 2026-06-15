@@ -41,7 +41,7 @@ mod config;
 mod error;
 /// Tracing/log subscriber initialization.
 mod logging;
-/// Varlink (`zlink`) management interface.
+/// Business logic used by the administrative interface.
 mod management;
 /// Access-control rule model and evaluation engine.
 mod policy;
@@ -53,6 +53,8 @@ mod server;
 mod tpm;
 /// Upstream TCTI client (talks to the physical TPM's resource manager).
 mod upstream;
+/// Varlink (`zlink`) protocol types and control service.
+mod varlink;
 
 // NOTE: minimal entry point so the crate still builds while the modules are
 // scaffolding. Wiring comes later: parse CLI args (`cli`), initialize tracing

@@ -33,6 +33,11 @@ It serves two kinds of traffic:
    carries the length). This upgraded connection is what the downstream
    `tss2-tcti-proxy` module drives.
 
+   **Implementation status:** planned, but blocked on upstream `zlink` support
+   for handing an upgraded connection to the service. The control methods are
+   implemented in the meantime; TPM access will be added when that API is
+   available.
+
 Requesting access explicitly — with a priority — before upgrading means the
 server learns the client's intent and scheduling priority up front and pairs it
 with the peer identity (`SO_PEERCRED`, read from the connected socket) for policy
