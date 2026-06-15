@@ -17,6 +17,6 @@
 //! upgrade handoff able to implement the same interface. See `docs/design.md`.
 
 /// Post-upgrade per-connection handling: raw TPM command/response streaming.
-mod connection;
+pub(crate) mod connection;
 /// Peer credential (uid/gid/pid) resolution from the connected socket.
 mod peer;

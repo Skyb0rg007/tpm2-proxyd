@@ -105,6 +105,12 @@ to abort and is not guaranteed to be honored quickly. Consequently:
 The `scheduler` module mediates all upstream access. Conceptually a client must
 hold a **TPM lease** to transmit a command:
 
+The initial implementation schedules complete commands through a single
+upstream worker. It chooses the highest-priority queued command, preserves FIFO
+order within the same priority, and never preempts an in-flight transaction.
+Timeouts, quotas, and time-slice accounting remain planned rather than active
+in this command path.
+
 - **Mutual exclusion.** Exactly one lease exists; holding it grants exclusive
   use of `upstream`. Released after the response (or timeout).
 - **Wait queue + priority + fairness.** Clients blocked on the lease wait in a
