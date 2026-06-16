@@ -5,4 +5,3 @@
 # https://rust-lang.github.io/rustfmt/
 
 edition = "2024"
-skip_children = true
