@@ -532,6 +532,8 @@ dependencies = [
  "tpm2",
  "tpm2-client",
  "tpm2-impl",
+ "tpm2-rs-base",
+ "tpm2-rs-marshalable",
  "tracing",
  "zlink",
 ]
