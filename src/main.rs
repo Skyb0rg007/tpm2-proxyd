@@ -70,7 +70,7 @@ async fn main() -> anyhow::Result<()> {
     let upstream = upstream::TctiConnection::new(device, options.max_packet_size);
     let scheduler = scheduler::CommandScheduler::start(upstream, options.queue_depth);
     let broker = broker::Broker::new(policy, scheduler);
-    let listener = server::unix::RawTpmListener::bind(&options.socket)
+    let listener = server::unix::RawTpmListener::bind_prepared(&options.socket)
         .with_context(|| format!("binding raw TPM socket {}", options.socket.display()))?;
 
     server::connection::serve_listener(listener, broker, options.max_packet_size)
