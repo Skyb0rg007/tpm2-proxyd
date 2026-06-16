@@ -499,12 +499,12 @@ dependencies = [
 [[package]]
 name = "tpm2"
 version = "0.1.0"
-source = "git+https://github.com/tpm-rs/tpm-rs.git?rev=b48a46fa4a09b252ed59aa8d03b2a35d3e5cbd0c#b48a46fa4a09b252ed59aa8d03b2a35d3e5cbd0c"
+source = "git+https://github.com/Skyb0rg007/tpm-rs.git?branch=main#6376605a24d835ddc5435cfff322d39d75becc70"
 
 [[package]]
 name = "tpm2-client"
 version = "0.1.0"
-source = "git+https://github.com/tpm-rs/tpm-rs.git?rev=b48a46fa4a09b252ed59aa8d03b2a35d3e5cbd0c#b48a46fa4a09b252ed59aa8d03b2a35d3e5cbd0c"
+source = "git+https://github.com/Skyb0rg007/tpm-rs.git?branch=main#6376605a24d835ddc5435cfff322d39d75becc70"
 dependencies = [
  "tpm2-rs-base",
  "tpm2-rs-marshalable",
@@ -514,7 +514,7 @@ dependencies = [
 [[package]]
 name = "tpm2-impl"
 version = "0.1.0"
-source = "git+https://github.com/tpm-rs/tpm-rs.git?rev=b48a46fa4a09b252ed59aa8d03b2a35d3e5cbd0c#b48a46fa4a09b252ed59aa8d03b2a35d3e5cbd0c"
+source = "git+https://github.com/Skyb0rg007/tpm-rs.git?branch=main#6376605a24d835ddc5435cfff322d39d75becc70"
 dependencies = [
  "hex-literal",
  "tpm2-rs-base",
@@ -541,7 +541,7 @@ dependencies = [
 [[package]]
 name = "tpm2-rs-base"
 version = "0.1.0"
-source = "git+https://github.com/tpm-rs/tpm-rs.git?rev=b48a46fa4a09b252ed59aa8d03b2a35d3e5cbd0c#b48a46fa4a09b252ed59aa8d03b2a35d3e5cbd0c"
+source = "git+https://github.com/Skyb0rg007/tpm-rs.git?branch=main#6376605a24d835ddc5435cfff322d39d75becc70"
 dependencies = [
  "bitflags",
  "open-enum",
@@ -553,7 +553,7 @@ dependencies = [
 [[package]]
 name = "tpm2-rs-marshalable"
 version = "0.1.0"
-source = "git+https://github.com/tpm-rs/tpm-rs.git?rev=b48a46fa4a09b252ed59aa8d03b2a35d3e5cbd0c#b48a46fa4a09b252ed59aa8d03b2a35d3e5cbd0c"
+source = "git+https://github.com/Skyb0rg007/tpm-rs.git?branch=main#6376605a24d835ddc5435cfff322d39d75becc70"
 dependencies = [
  "safe-discriminant",
  "tpm2",
@@ -563,7 +563,7 @@ dependencies = [
 [[package]]
 name = "tpm2-rs-marshalable-derive"
 version = "0.1.0"
-source = "git+https://github.com/tpm-rs/tpm-rs.git?rev=b48a46fa4a09b252ed59aa8d03b2a35d3e5cbd0c#b48a46fa4a09b252ed59aa8d03b2a35d3e5cbd0c"
+source = "git+https://github.com/Skyb0rg007/tpm-rs.git?branch=main#6376605a24d835ddc5435cfff322d39d75becc70"
 dependencies = [
  "proc-macro2",
  "quote",
