@@ -17,10 +17,10 @@ serde = { version = "1.0.228", features = ["derive"] }
 serde_json = "1.0.150"
 thiserror = "2.0.18"
 tokio = { version = "1.52.3", features = ["tracing", "rt", "rt-multi-thread", "macros", "sync", "time", "net", "io-util"] }
-tpm2 = { git = "https://github.com/tpm-rs/tpm-rs.git", rev = "b48a46fa4a09b252ed59aa8d03b2a35d3e5cbd0c" }
-tpm2-client = { git = "https://github.com/tpm-rs/tpm-rs.git", rev = "b48a46fa4a09b252ed59aa8d03b2a35d3e5cbd0c" }
-tpm2-impl = { git = "https://github.com/tpm-rs/tpm-rs.git", rev = "b48a46fa4a09b252ed59aa8d03b2a35d3e5cbd0c" }
-tpm2-rs-base = { git = "https://github.com/tpm-rs/tpm-rs.git", rev = "b48a46fa4a09b252ed59aa8d03b2a35d3e5cbd0c" }
-tpm2-rs-marshalable = { git = "https://github.com/tpm-rs/tpm-rs.git", rev = "b48a46fa4a09b252ed59aa8d03b2a35d3e5cbd0c" }
+tpm2 = { git = "https://github.com/Skyb0rg007/tpm-rs.git", branch = "main" }
+tpm2-client = { git = "https://github.com/Skyb0rg007/tpm-rs.git", branch = "main" }
+tpm2-impl = { git = "https://github.com/Skyb0rg007/tpm-rs.git", branch = "main" }
+tpm2-rs-base = { git = "https://github.com/Skyb0rg007/tpm-rs.git", branch = "main" }
+tpm2-rs-marshalable = { git = "https://github.com/Skyb0rg007/tpm-rs.git", branch = "main" }
 tracing = "0.1.44"
 zlink = { version = "0.5.0", features = ["idl-parse"] }
