@@ -125,6 +125,7 @@ mod tests {
         codes: Arc<Mutex<Vec<u32>>>,
     }
 
+    #[async_trait::async_trait]
     impl Upstream for CountingUpstream {
         async fn transact(&mut self, command: &Command) -> Result<Response, UpstreamError> {
             self.count.fetch_add(1, Ordering::Relaxed);

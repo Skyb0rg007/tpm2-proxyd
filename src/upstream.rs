@@ -10,7 +10,9 @@
 
 #![allow(dead_code)] // Wired into main once daemon construction is implemented.
 
-use std::{error::Error, future::Future};
+use std::error::Error;
+
+use async_trait::async_trait;
 
 use crate::tpm::{Command, Response};
 
@@ -26,12 +28,10 @@ pub enum UpstreamError {
 }
 
 /// A TPM transport capable of one complete command/response transaction.
+#[async_trait]
 pub trait Upstream: Send + 'static {
     /// Send `command` and wait for its response.
-    fn transact(
-        &mut self,
-        command: &Command,
-    ) -> impl Future<Output = Result<Response, UpstreamError>> + Send;
+    async fn transact(&mut self, command: &Command) -> Result<Response, UpstreamError>;
 }
 
 /// Adapter for a synchronous `tpm2-client` connection/TCTI.
@@ -60,6 +60,7 @@ impl<C> TctiConnection<C> {
     }
 }
 
+#[async_trait]
 impl<C> Upstream for TctiConnection<C>
 where
     C: tpm2_client::connection::Connection + Send + 'static,
