@@ -58,10 +58,6 @@ mod varlink;
 
 use anyhow::Context;
 
-const DEFAULT_RAW_SOCKET_PATH: &str = "/run/tpm2-proxyd/tpm2-proxyd.sock";
-const DEFAULT_UPSTREAM_TPM_PATH: &str = "/dev/tpmrm0";
-const DEFAULT_QUEUE_CAPACITY: usize = 64;
-
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
     let options = cli::Options::parse_env()?;
@@ -69,15 +65,15 @@ async fn main() -> anyhow::Result<()> {
         .with_context(|| format!("loading config {}", options.config.display()))?
         .policy();
 
-    let device = upstream::LinuxTpmDevice::open(DEFAULT_UPSTREAM_TPM_PATH)
-        .with_context(|| format!("opening upstream TPM device {DEFAULT_UPSTREAM_TPM_PATH}"))?;
-    let upstream = upstream::TctiConnection::new(device, tpm::DEFAULT_MAX_PACKET_SIZE);
-    let scheduler = scheduler::CommandScheduler::start(upstream, DEFAULT_QUEUE_CAPACITY);
+    let device = upstream::LinuxTpmDevice::open(&options.upstream)
+        .with_context(|| format!("opening upstream TPM device {}", options.upstream.display()))?;
+    let upstream = upstream::TctiConnection::new(device, options.max_packet_size);
+    let scheduler = scheduler::CommandScheduler::start(upstream, options.queue_depth);
     let broker = broker::Broker::new(policy, scheduler);
-    let listener = server::unix::RawTpmListener::bind(DEFAULT_RAW_SOCKET_PATH)
-        .with_context(|| format!("binding raw TPM socket {DEFAULT_RAW_SOCKET_PATH}"))?;
+    let listener = server::unix::RawTpmListener::bind(&options.socket)
+        .with_context(|| format!("binding raw TPM socket {}", options.socket.display()))?;
 
-    server::connection::serve_listener(listener, broker, tpm::DEFAULT_MAX_PACKET_SIZE)
+    server::connection::serve_listener(listener, broker, options.max_packet_size)
         .await
         .context("serving raw TPM socket")?;
 
