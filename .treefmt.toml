@@ -10,4 +10,5 @@ includes = [ "*.nix" ]
 
 [formatter.rustfmt]
 command = "rustfmt"
+options = [ "--config", "skip_children=true" ]
 includes = [ "*.rs" ]
