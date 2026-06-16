@@ -20,3 +20,5 @@
 pub(crate) mod connection;
 /// Peer credential (uid/gid/pid) resolution from the connected socket.
 pub(crate) mod peer;
+/// Raw Unix-domain socket TPM listener.
+pub(crate) mod unix;
