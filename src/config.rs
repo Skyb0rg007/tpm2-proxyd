@@ -11,6 +11,7 @@
 use std::{fs, io, path::Path};
 
 use serde::{Deserialize, Serialize};
+use tpm2_rs_base::constants::TpmCc;
 
 use crate::policy::{CommandRule, Decision, Policy, PolicyConfig, PriorityRule, Subject};
 
@@ -96,7 +97,7 @@ impl Config {
             };
             command_rules.push(CommandRule {
                 subject: subject.clone(),
-                commands: rule.commands.clone(),
+                commands: rule.commands.iter().copied().map(TpmCc).collect(),
                 decision: Decision::Allow,
             });
             priority_rules.push(PriorityRule {
@@ -112,7 +113,7 @@ impl Config {
             };
             command_rules.push(CommandRule {
                 subject: subject.clone(),
-                commands: rule.commands.clone(),
+                commands: rule.commands.iter().copied().map(TpmCc).collect(),
                 decision: Decision::Allow,
             });
             priority_rules.push(PriorityRule {
