@@ -11,14 +11,18 @@
 
 #![allow(dead_code)] // Wired into main once daemon construction is implemented.
 
+pub mod linux;
+
 use std::io;
 
 use tokio::io::{AsyncRead, AsyncReadExt};
+use tpm2_client::{CmdHeader, RespHeader};
 use tpm2_rs_base::{
+    TpmiStCommandTag,
     commands::TpmCommand,
-    constants::{TpmCc, TpmSt},
+    constants::TpmCc,
+    marshal::{Marshalable, UnmarshalBuf},
 };
-use tpm2_rs_marshalable::{Marshalable, UnmarshalBuf};
 
 /// Size of a TPM command or response header.
 pub const HEADER_SIZE: usize = 10;
@@ -153,11 +157,19 @@ pub async fn read_command(
     }))
 }
 
-fn parse_command_header(bytes: &[u8], max_size: usize) -> Result<TpmHeader, ParseError> {
-    let header = parse_packet_header(bytes, max_size)?;
-    if !matches!(header.tag, TpmSt::NoSessions | TpmSt::Sessions) {
+fn parse_command_header(bytes: &[u8], max_size: usize) -> Result<CmdHeader, ParseError> {
+    if bytes.len() < HEADER_SIZE {
+        return Err(ParseError::ShortHeader);
+    }
+    let mut buffer = UnmarshalBuf::new(bytes);
+    let header = CmdHeader::try_unmarshal(&mut buffer).map_err(|_| ParseError::ShortHeader)?;
+    if !matches!(
+        header.tag,
+        TpmiStCommandTag::NoSessions | TpmiStCommandTag::Sessions
+    ) {
         return Err(ParseError::InvalidCommandTag(header.tag.0));
     }
+    validate_packet_size(header.size, max_size)?;
     Ok(header)
 }
 
@@ -165,14 +177,17 @@ fn parse_packet_size(bytes: &[u8], max_size: usize) -> Result<usize, ParseError>
     parse_packet_header(bytes, max_size).map(|header| header.size as usize)
 }
 
-fn parse_packet_header(bytes: &[u8], max_size: usize) -> Result<TpmHeader, ParseError> {
+fn parse_packet_header(bytes: &[u8], max_size: usize) -> Result<RespHeader, ParseError> {
     if bytes.len() < HEADER_SIZE {
         return Err(ParseError::ShortHeader);
     }
     let mut buffer = UnmarshalBuf::new(bytes);
-    let tag = TpmSt::try_unmarshal(&mut buffer).map_err(|_| ParseError::ShortHeader)?;
-    let size = u32::try_unmarshal(&mut buffer).map_err(|_| ParseError::ShortHeader)?;
-    let code = TpmCc::try_unmarshal(&mut buffer).map_err(|_| ParseError::ShortHeader)?;
+    let header = RespHeader::try_unmarshal(&mut buffer).map_err(|_| ParseError::ShortHeader)?;
+    validate_packet_size(header.size, max_size)?;
+    Ok(header)
+}
+
+fn validate_packet_size(size: u32, max_size: usize) -> Result<(), ParseError> {
     if size < HEADER_SIZE as u32 {
         return Err(ParseError::InvalidSize(size));
     }
@@ -182,13 +197,7 @@ fn parse_packet_header(bytes: &[u8], max_size: usize) -> Result<TpmHeader, Parse
             max: max_size,
         });
     }
-    Ok(TpmHeader { tag, size, code })
-}
-
-struct TpmHeader {
-    tag: TpmSt,
-    size: u32,
-    code: TpmCc,
+    Ok(())
 }
 
 fn invalid_data(error: ParseError) -> io::Error {
@@ -198,6 +207,7 @@ fn invalid_data(error: ParseError) -> io::Error {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use tpm2_rs_base::constants::TpmSt;
 
     fn command(code: u32, body: &[u8]) -> Vec<u8> {
         let size = (HEADER_SIZE + body.len()) as u32;
