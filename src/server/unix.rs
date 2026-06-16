@@ -12,7 +12,11 @@
 
 #![allow(dead_code)] // Main wiring is implemented in a later change.
 
-use std::{io, path::Path};
+use std::{
+    fs, io,
+    os::unix::fs::{FileTypeExt, PermissionsExt},
+    path::Path,
+};
 
 use tokio::net::{UnixListener, UnixStream};
 
@@ -23,6 +27,9 @@ use crate::{
         peer::Peer,
     },
 };
+
+/// Default mode for the temporary raw TPM socket.
+pub const DEFAULT_SOCKET_MODE: u32 = 0o660;
 
 /// Resolves a peer identity for an accepted Unix stream.
 pub trait PeerResolver: Send + Sync + 'static {
@@ -53,9 +60,46 @@ impl RawTpmListener<UnixPeerResolver> {
         UnixListener::bind(path).map(Self::from_listener)
     }
 
+    /// Prepare and bind a raw TPM Unix listener at `path`.
+    ///
+    /// This creates the parent directory, removes an existing stale socket, and
+    /// applies [`DEFAULT_SOCKET_MODE`] after binding. Existing non-socket paths
+    /// are rejected rather than overwritten.
+    pub fn bind_prepared(path: impl AsRef<Path>) -> io::Result<Self> {
+        Self::bind_prepared_with_mode(path, DEFAULT_SOCKET_MODE)
+    }
+
+    /// Like [`Self::bind_prepared`], but with an explicit socket file mode.
+    pub fn bind_prepared_with_mode(path: impl AsRef<Path>, mode: u32) -> io::Result<Self> {
+        let path = path.as_ref();
+        prepare_socket_path(path)?;
+        let listener = UnixListener::bind(path)?;
+        fs::set_permissions(path, fs::Permissions::from_mode(mode))?;
+        Ok(Self::from_listener(listener))
+    }
+
     /// Wrap an existing Tokio Unix listener.
     pub fn from_listener(inner: UnixListener) -> Self {
         Self::from_listener_with_resolver(inner, UnixPeerResolver)
+    }
+}
+
+fn prepare_socket_path(path: &Path) -> io::Result<()> {
+    if let Some(parent) = path
+        .parent()
+        .filter(|parent| !parent.as_os_str().is_empty())
+    {
+        fs::create_dir_all(parent)?;
+    }
+
+    match fs::symlink_metadata(path) {
+        Ok(metadata) if metadata.file_type().is_socket() => fs::remove_file(path),
+        Ok(_) => Err(io::Error::new(
+            io::ErrorKind::AlreadyExists,
+            format!("refusing to replace non-socket path {}", path.display()),
+        )),
+        Err(error) if error.kind() == io::ErrorKind::NotFound => Ok(()),
+        Err(error) => Err(error),
     }
 }
 
@@ -100,6 +144,8 @@ fn accept_stream(
 
 #[cfg(test)]
 mod tests {
+    use std::{fs, path::PathBuf};
+
     use crate::{
         broker::Broker,
         policy::{Policy, PolicyConfig, PriorityRule, Subject},
@@ -109,6 +155,10 @@ mod tests {
     };
 
     use super::*;
+
+    fn temp_path(name: &str) -> PathBuf {
+        std::env::temp_dir().join(format!("tpm2-proxyd-{}-{name}", std::process::id()))
+    }
 
     #[derive(Clone)]
     struct StaticPeerResolver(Peer);
@@ -166,5 +216,37 @@ mod tests {
         let client = broker.admit(accepted.peer, accepted.requested_priority);
 
         assert_eq!(client.priority(), Priority(6));
+    }
+
+    #[test]
+    fn prepare_socket_path_creates_parent_directory() {
+        let dir = temp_path("prepare-parent");
+        let path = dir.join("nested").join("proxy.sock");
+        let _cleanup = Cleanup(dir.clone());
+
+        prepare_socket_path(&path).unwrap();
+
+        assert!(path.parent().unwrap().is_dir());
+    }
+
+    #[test]
+    fn prepared_bind_rejects_non_socket_path() {
+        let dir = temp_path("non-socket");
+        fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("proxy.sock");
+        let _cleanup = Cleanup(dir.clone());
+        fs::write(&path, b"not a socket").unwrap();
+
+        let error = RawTpmListener::bind_prepared(&path).unwrap_err();
+
+        assert_eq!(error.kind(), io::ErrorKind::AlreadyExists);
+    }
+
+    struct Cleanup(PathBuf);
+
+    impl Drop for Cleanup {
+        fn drop(&mut self) {
+            let _ = fs::remove_dir_all(&self.0);
+        }
     }
 }
