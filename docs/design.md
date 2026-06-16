@@ -82,6 +82,10 @@ can select a UID, a primary or supplementary GID, and one or more TPM command
 codes; an empty command-code list matches every command. The policy defaults to
 deny when no command rule matches.
 
+Longer term, permissions will be determined and granted through Polkit. Local
+rules remain useful as the daemon's compiled enforcement model, but the
+authority for granting access is Polkit policy and authorization.
+
 Connection priority is bounded separately by ordered UID/GID cap rules. The cap
 is applied once when a client is admitted, so the effective priority remains
 fixed for the connection lifetime. The active policy can be atomically replaced;
