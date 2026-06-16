@@ -56,9 +56,9 @@ mod upstream;
 /// Varlink (`zlink`) protocol types and control service.
 mod varlink;
 
-// NOTE: minimal entry point so the crate still builds while the modules are
-// scaffolding. Wiring comes later: parse CLI args (`cli`), initialize tracing
-// (`logging`), load the configuration (`config`), construct the `scheduler` and
-// `broker`, start the `management` interface, and run the `server` accept loop
-// on a Tokio runtime.
-fn main() {}
+fn main() -> anyhow::Result<()> {
+    let options = cli::Options::parse_env()?;
+    let _policy = config::Config::load(&options.config)?.policy();
+
+    Ok(())
+}
