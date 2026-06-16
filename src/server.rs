@@ -6,9 +6,7 @@
 //!
 //! Binds the daemon's one socket (default
 //! `/run/tpm2-proxyd/website.soss.Tpm2Proxyd`), accepts client connections, and
-//! resolves each peer's credentials ([`peer`]). On each connection it serves the
-//! `website.soss.Tpm2Proxyd` Varlink interface, routing control methods to
-//! [`crate::management`].
+//! resolves each peer's credentials ([`peer`]).
 //!
 //! Once a transport has admitted a TPM client, [`connection`] parses its
 //! self-framing TPM command stream and submits commands to
