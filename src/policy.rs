@@ -12,6 +12,7 @@
 #![allow(dead_code)] // Main/config wiring is implemented in a later change.
 
 use serde::{Deserialize, Serialize};
+use tpm2_rs_base::constants::TpmCc;
 
 use crate::{scheduler::Priority, server::peer::Peer, tpm::Command};
 
@@ -49,7 +50,8 @@ pub struct CommandRule {
     /// Peer selector.
     pub subject: Subject,
     /// TPM command codes matched by this rule; empty means all commands.
-    pub commands: Vec<u32>,
+    #[serde(with = "command_codes")]
+    pub commands: Vec<TpmCc>,
     /// Decision returned when the rule matches.
     pub decision: Decision,
 }
@@ -61,6 +63,30 @@ impl Default for CommandRule {
             commands: Vec::new(),
             decision: Decision::Deny,
         }
+    }
+}
+
+mod command_codes {
+    use serde::{Deserialize, Deserializer, Serialize, Serializer};
+    use tpm2_rs_base::constants::TpmCc;
+
+    pub fn serialize<S>(commands: &[TpmCc], serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: Serializer,
+    {
+        commands
+            .iter()
+            .map(|command| command.0)
+            .collect::<Vec<_>>()
+            .serialize(serializer)
+    }
+
+    pub fn deserialize<'de, D>(deserializer: D) -> Result<Vec<TpmCc>, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        Vec::<u32>::deserialize(deserializer)
+            .map(|commands| commands.into_iter().map(TpmCc).collect())
     }
 }
 
@@ -127,7 +153,7 @@ impl Policy {
             .iter()
             .find(|rule| {
                 rule.subject.matches(peer)
-                    && (rule.commands.is_empty() || rule.commands.contains(&command.code().0))
+                    && (rule.commands.is_empty() || rule.commands.contains(&command.code()))
             })
             .map_or(self.config.default_decision, |rule| rule.decision)
     }
@@ -165,12 +191,12 @@ mod tests {
                         uid: Some(1000),
                         gid: None,
                     },
-                    commands: vec![0x17b],
+                    commands: vec![TpmCc::GetRandom],
                     decision: Decision::Allow,
                 },
                 CommandRule {
                     subject: Subject::default(),
-                    commands: vec![0x17b],
+                    commands: vec![TpmCc::GetRandom],
                     decision: Decision::Deny,
                 },
             ],
@@ -260,7 +286,7 @@ mod tests {
         )
         .unwrap();
 
-        assert_eq!(config.command_rules[0].commands, [0x17b]);
+        assert_eq!(config.command_rules[0].commands, [TpmCc::GetRandom]);
         assert_eq!(config.priority_rules[0].max_priority, 5);
     }
 }
