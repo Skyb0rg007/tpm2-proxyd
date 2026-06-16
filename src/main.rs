@@ -65,7 +65,7 @@ async fn main() -> anyhow::Result<()> {
         .with_context(|| format!("loading config {}", options.config.display()))?
         .policy();
 
-    let device = upstream::LinuxTpmDevice::open(&options.upstream)
+    let device = tpm::linux::LinuxTpmDevice::open(&options.upstream)
         .with_context(|| format!("opening upstream TPM device {}", options.upstream.display()))?;
     let upstream = upstream::TctiConnection::new(device, options.max_packet_size);
     let scheduler = scheduler::CommandScheduler::start(upstream, options.queue_depth);
