@@ -127,7 +127,7 @@ impl Policy {
             .iter()
             .find(|rule| {
                 rule.subject.matches(peer)
-                    && (rule.commands.is_empty() || rule.commands.contains(&command.header().code))
+                    && (rule.commands.is_empty() || rule.commands.contains(&command.code().0))
             })
             .map_or(self.config.default_decision, |rule| rule.decision)
     }

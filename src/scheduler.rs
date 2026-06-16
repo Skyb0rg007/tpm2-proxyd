@@ -885,14 +885,14 @@ mod tests {
     impl Upstream for RecordingUpstream {
         async fn transact(&mut self, command: &Command) -> Result<Response, UpstreamError> {
             let is_first = self.calls.lock().unwrap().is_empty();
-            self.calls.lock().unwrap().push(command.header().code);
+            self.calls.lock().unwrap().push(command.code().0);
             if is_first {
                 if let Some(started) = self.first_started.take() {
                     let _ = started.send(());
                 }
                 self.release_first.acquire().await.unwrap().forget();
             }
-            Ok(success_response(command.header().code))
+            Ok(success_response(command.code().0))
         }
     }
 

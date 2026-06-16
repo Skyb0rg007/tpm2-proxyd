@@ -211,10 +211,10 @@ mod tests {
 
     impl Upstream for EchoUpstream {
         async fn transact(&mut self, command: &Command) -> Result<Response, UpstreamError> {
-            self.commands.lock().unwrap().push(command.header().code);
+            self.commands.lock().unwrap().push(command.code().0);
             let mut response = Vec::from(0x8001u16.to_be_bytes());
             response.extend_from_slice(&10u32.to_be_bytes());
-            response.extend_from_slice(&command.header().code.to_be_bytes());
+            response.extend_from_slice(&command.code().0.to_be_bytes());
             Ok(Response::parse(response, DEFAULT_MAX_PACKET_SIZE).unwrap())
         }
     }

@@ -14,7 +14,10 @@
 use std::io;
 
 use tokio::io::{AsyncRead, AsyncReadExt};
-use tpm2_rs_base::constants::{TpmCc, TpmSt};
+use tpm2_rs_base::{
+    commands::TpmCommand,
+    constants::{TpmCc, TpmSt},
+};
 use tpm2_rs_marshalable::{Marshalable, UnmarshalBuf};
 
 /// Size of a TPM command or response header.
@@ -23,21 +26,10 @@ pub const HEADER_SIZE: usize = 10;
 /// Conservative default bound for packets accepted from either direction.
 pub const DEFAULT_MAX_PACKET_SIZE: usize = 1024 * 1024;
 
-/// Parsed TPM command header.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub struct CommandHeader {
-    /// TPM structure tag.
-    pub tag: u16,
-    /// Total command size, including the header.
-    pub size: u32,
-    /// TPM command code.
-    pub code: u32,
-}
-
-/// Validated TPM command bytes and their parsed header.
+/// Validated TPM command bytes and their parsed command code.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Command {
-    header: CommandHeader,
+    code: TpmCc,
     bytes: Vec<u8>,
 }
 
@@ -51,12 +43,20 @@ impl Command {
                 actual: bytes.len(),
             });
         }
-        Ok(Self { header, bytes })
+        Ok(Self {
+            code: header.code,
+            bytes,
+        })
     }
 
-    /// Parsed header.
-    pub fn header(&self) -> CommandHeader {
-        self.header
+    /// Parsed TPM command code.
+    pub fn code(&self) -> TpmCc {
+        self.code
+    }
+
+    /// Return whether this packet carries command type `C`.
+    pub fn is<C: TpmCommand>(&self) -> bool {
+        self.code == C::CMD_CODE
     }
 
     /// Complete encoded command.
@@ -148,21 +148,17 @@ pub async fn read_command(
     stream.read_exact(&mut bytes[HEADER_SIZE..]).await?;
 
     Ok(Some(Command {
-        header: parsed,
+        code: parsed.code,
         bytes,
     }))
 }
 
-fn parse_command_header(bytes: &[u8], max_size: usize) -> Result<CommandHeader, ParseError> {
+fn parse_command_header(bytes: &[u8], max_size: usize) -> Result<TpmHeader, ParseError> {
     let header = parse_packet_header(bytes, max_size)?;
     if !matches!(header.tag, TpmSt::NoSessions | TpmSt::Sessions) {
         return Err(ParseError::InvalidCommandTag(header.tag.0));
     }
-    Ok(CommandHeader {
-        tag: header.tag.0,
-        size: header.size,
-        code: header.code.0,
-    })
+    Ok(header)
 }
 
 fn parse_packet_size(bytes: &[u8], max_size: usize) -> Result<usize, ParseError> {
@@ -215,14 +211,8 @@ mod tests {
     #[test]
     fn parses_command_header() {
         let command = Command::parse(command(0x17b, &[0, 8]), 4096).unwrap();
-        assert_eq!(
-            command.header(),
-            CommandHeader {
-                tag: TpmSt::NoSessions.0,
-                size: 12,
-                code: 0x17b,
-            }
-        );
+        assert_eq!(command.code(), TpmCc::GetRandom);
+        assert!(command.is::<tpm2_rs_base::commands::GetRandomCmd>());
     }
 
     #[test]
