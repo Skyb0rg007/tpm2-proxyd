@@ -16,5 +16,6 @@ pkgs.mkShell {
     pkgs.treefmt
     pkgs.pre-commit
     pkgs.nixfmt
+    pkgs.clippy
   ];
 }
