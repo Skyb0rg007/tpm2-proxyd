@@ -18,7 +18,7 @@ use std::{
     path::Path,
 };
 
-use crate::tpm::{Command, HEADER_SIZE, Response};
+use crate::tpm::{self, Command, HEADER_SIZE, Response};
 
 /// Error returned when an upstream transaction cannot produce a valid response.
 #[derive(Debug, thiserror::Error)]
@@ -87,10 +87,7 @@ fn transact_device<'a>(
 
     let mut header = [0; HEADER_SIZE];
     device.read_exact(&mut header)?;
-    let size = u32::from_be_bytes([header[2], header[3], header[4], header[5]]) as usize;
-    if size < HEADER_SIZE {
-        return Err(DeviceError::InvalidResponseSize(size));
-    }
+    let size = tpm::packet_size_from_header(&header, usize::MAX)?;
     if size > rsp.len() {
         return Err(DeviceError::ResponseBufferTooSmall {
             needed: size,
@@ -109,9 +106,9 @@ pub enum DeviceError {
     /// Linux device I/O failed.
     #[error("Linux TPM device I/O failed: {0}")]
     Io(#[from] io::Error),
-    /// The device returned a response size smaller than a TPM header.
-    #[error("Linux TPM device returned invalid response size {0}")]
-    InvalidResponseSize(usize),
+    /// The device returned a malformed TPM response header.
+    #[error("Linux TPM device returned malformed response header: {0}")]
+    MalformedResponse(#[from] crate::tpm::ParseError),
     /// The provided response buffer cannot hold the complete response.
     #[error("Linux TPM response requires {needed} bytes, but buffer has {available}")]
     ResponseBufferTooSmall {
@@ -232,7 +229,9 @@ mod tests {
 
         assert!(matches!(
             transact_device(&mut device, &[1, 2], &mut buffer),
-            Err(DeviceError::InvalidResponseSize(9))
+            Err(DeviceError::MalformedResponse(
+                crate::tpm::ParseError::InvalidSize(9)
+            ))
         ));
     }
 
