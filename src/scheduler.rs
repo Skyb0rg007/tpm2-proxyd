@@ -182,6 +182,7 @@ mod tests {
         release_first: Arc<tokio::sync::Semaphore>,
     }
 
+    #[async_trait::async_trait]
     impl Upstream for RecordingUpstream {
         async fn transact(&mut self, command: &Command) -> Result<Response, UpstreamError> {
             let is_first = self.calls.lock().unwrap().is_empty();

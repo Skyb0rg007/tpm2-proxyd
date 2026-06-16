@@ -171,6 +171,7 @@ mod tests {
 
     struct EchoUpstream;
 
+    #[async_trait::async_trait]
     impl Upstream for EchoUpstream {
         async fn transact(&mut self, command: &Command) -> Result<Response, UpstreamError> {
             let mut response = Vec::from(0x8001u16.to_be_bytes());

@@ -209,6 +209,7 @@ mod tests {
         commands: Arc<Mutex<Vec<u32>>>,
     }
 
+    #[async_trait::async_trait]
     impl Upstream for EchoUpstream {
         async fn transact(&mut self, command: &Command) -> Result<Response, UpstreamError> {
             self.commands.lock().unwrap().push(command.code().0);
