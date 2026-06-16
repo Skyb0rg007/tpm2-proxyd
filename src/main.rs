@@ -37,12 +37,6 @@ mod broker;
 mod cli;
 /// On-disk configuration model and loading.
 mod config;
-/// Crate-wide error and result types.
-mod error;
-/// Tracing/log subscriber initialization.
-mod logging;
-/// Business logic used by the administrative interface.
-mod management;
 /// Access-control rule model and evaluation engine.
 mod policy;
 /// Upstream TPM access scheduler: time slices and time limits.
