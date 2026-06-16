@@ -38,6 +38,11 @@ It serves two kinds of traffic:
    implemented in the meantime; TPM access will be added when that API is
    available.
 
+   Until then, the daemon can expose a raw Unix-domain TPM socket as a temporary
+   TPM-only transport. That listener accepts self-framing TPM command bytes
+   directly, derives the peer UID/GID from Unix socket credentials, and leaves
+   the connection priority entirely to policy rules for that UID/GID.
+
 Requesting access explicitly — with a priority — before upgrading means the
 server learns the client's intent and scheduling priority up front and pairs it
 with the peer identity (`SO_PEERCRED`, read from the connected socket) for policy

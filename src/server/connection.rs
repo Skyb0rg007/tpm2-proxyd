@@ -94,7 +94,7 @@ impl TokioListener for tokio::net::TcpListener {
     }
 }
 
-/// Adapter for raw Unix or TCP listeners whose clients share one priority.
+/// Test adapter for listeners whose clients share one static identity/priority.
 ///
 /// Transports with an admission handshake can implement [`Listener`] directly
 /// and assign a different priority to each accepted stream.

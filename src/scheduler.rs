@@ -510,6 +510,13 @@ impl CommandScheduler {
     }
 }
 
+impl Priority {
+    /// Request the highest possible priority.
+    ///
+    /// Admission policy should cap this to the maximum allowed for the peer.
+    pub const MAX: Self = Self(i32::MAX);
+}
+
 /// Failure to execute a scheduled command.
 #[derive(Debug, thiserror::Error)]
 pub enum ExecuteError {

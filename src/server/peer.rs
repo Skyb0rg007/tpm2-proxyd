@@ -8,7 +8,11 @@
 //! lookup. Other transports can provide an authenticated identity during their
 //! own admission handshake.
 
-#![allow(dead_code)] // Unix credential extraction is wired in with the listener.
+#![allow(dead_code)] // Main wiring is implemented in a later change.
+
+use std::io;
+
+use tokio::net::UnixStream;
 
 /// Identity used by policy decisions.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -34,5 +38,15 @@ impl Peer {
     /// Return whether the peer belongs to `gid`.
     pub fn belongs_to(&self, gid: u32) -> bool {
         self.primary_gid == gid || self.supplementary_gids.contains(&gid)
+    }
+
+    /// Resolve peer identity from a connected Unix-domain stream.
+    pub fn from_unix_stream(stream: &UnixStream) -> io::Result<Self> {
+        let credentials = stream.peer_cred()?;
+        Ok(Self {
+            uid: credentials.uid(),
+            primary_gid: credentials.gid(),
+            supplementary_gids: Vec::new(),
+        })
     }
 }
