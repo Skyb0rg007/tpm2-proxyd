@@ -135,9 +135,7 @@ pub fn sd_watchdog_enabled() -> io::Result<Option<NonZeroU64>> {
     if usec == u64::MAX {
         return Err(io::Errno::INVAL);
     }
-    let Some(usec) = NonZeroU64::new(usec) else {
-        return Err(io::Errno::INVAL);
-    };
+    let usec = NonZeroU64::new(usec).ok_or(io::Errno::INVAL)?;
 
     if let Some(watchdog_pid) = env::var_os(WATCHDOG_PID) {
         let pid = watchdog_pid
