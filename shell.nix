@@ -6,6 +6,13 @@
   pkgs ? import <nixpkgs> { },
 }:
 pkgs.mkShell {
+  # tpm2-crypto (pulled in by tpm2-device) links against OpenSSL via openssl-sys.
+  nativeBuildInputs = [
+    pkgs.pkg-config
+  ];
+  buildInputs = [
+    pkgs.openssl
+  ];
   packages = [
     pkgs.tpm2-tss
     pkgs.cargo

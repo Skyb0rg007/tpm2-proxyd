@@ -212,11 +212,8 @@ mod tests {
     #[async_trait::async_trait]
     impl Upstream for EchoUpstream {
         async fn transact(&mut self, command: &Command) -> Result<Response, UpstreamError> {
-            self.commands.lock().unwrap().push(command.code().0);
-            let mut response = Vec::from(0x8001u16.to_be_bytes());
-            response.extend_from_slice(&10u32.to_be_bytes());
-            response.extend_from_slice(&command.code().0.to_be_bytes());
-            Ok(Response::parse(response, DEFAULT_MAX_PACKET_SIZE).unwrap())
+            self.commands.lock().unwrap().push(command.code().value());
+            Ok(Response::parse(response(command.code().value()), DEFAULT_MAX_PACKET_SIZE).unwrap())
         }
     }
 
@@ -225,6 +222,16 @@ mod tests {
         command.extend_from_slice(&10u32.to_be_bytes());
         command.extend_from_slice(&code.to_be_bytes());
         command
+    }
+
+    // A valid success response carrying the command code in its body, so the
+    // routed-back response is identifiable.
+    fn response(code: u32) -> Vec<u8> {
+        let mut response = Vec::from(0x8001u16.to_be_bytes());
+        response.extend_from_slice(&14u32.to_be_bytes());
+        response.extend_from_slice(&0u32.to_be_bytes());
+        response.extend_from_slice(&code.to_be_bytes());
+        response
     }
 
     async fn read_packet(stream: &mut tokio::io::DuplexStream) -> Vec<u8> {
@@ -257,9 +264,9 @@ mod tests {
         ));
 
         client.write_all(&command(0x17b)).await.unwrap();
-        assert_eq!(read_packet(&mut client).await, command(0x17b));
+        assert_eq!(read_packet(&mut client).await, response(0x17b));
         client.write_all(&command(0x17a)).await.unwrap();
-        assert_eq!(read_packet(&mut client).await, command(0x17a));
+        assert_eq!(read_packet(&mut client).await, response(0x17a));
         client.shutdown().await.unwrap();
 
         server_task.await.unwrap().unwrap();

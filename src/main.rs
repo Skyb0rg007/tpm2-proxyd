@@ -39,11 +39,11 @@ mod cli;
 mod config;
 /// Access-control rule model and evaluation engine.
 mod policy;
-/// Upstream TPM access scheduler: time slices and time limits.
+/// Non-preemptive upstream TPM command scheduler.
 mod scheduler;
 /// Downstream Unix-socket listener and per-connection handling.
 mod server;
-/// TPM command/response inspection (built on the `tpm2` crates).
+/// TPM command/response inspection.
 mod tpm;
 /// Upstream TCTI client (talks to the physical TPM's resource manager).
 mod upstream;
@@ -59,9 +59,8 @@ async fn main() -> anyhow::Result<()> {
         .with_context(|| format!("loading config {}", options.config.display()))?
         .policy();
 
-    let device = tpm::linux::LinuxTpmDevice::open(&options.upstream)
+    let upstream = upstream::TpmDeviceUpstream::open(&options.upstream, options.max_packet_size)
         .with_context(|| format!("opening upstream TPM device {}", options.upstream.display()))?;
-    let upstream = upstream::TctiConnection::new(device, options.max_packet_size);
     let scheduler = scheduler::CommandScheduler::start(upstream, options.queue_depth);
     let broker = broker::Broker::new(policy, scheduler);
     let listener = server::unix::RawTpmListener::bind_prepared(&options.socket)
