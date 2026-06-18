@@ -11,17 +11,13 @@
 
 #![allow(dead_code)] // Wired into main once daemon construction is implemented.
 
-pub mod linux;
-
 use std::io;
 
 use tokio::io::{AsyncRead, AsyncReadExt};
-use tpm2_client::{CmdHeader, RespHeader};
-use tpm2_rs_base::{
-    TpmiStCommandTag,
-    commands::TpmCommand,
-    constants::TpmCc,
-    marshal::{Marshalable, UnmarshalBuf},
+use tpm2_protocol::{
+    TpmError,
+    data::{TpmCc, TpmSt},
+    frame::{TpmCommand as WireCommand, TpmResponse as WireResponse},
 };
 
 /// Size of a TPM command or response header.
@@ -40,15 +36,17 @@ pub struct Command {
 impl Command {
     /// Validate a complete TPM command.
     pub fn parse(bytes: Vec<u8>, max_size: usize) -> Result<Self, ParseError> {
-        let header = parse_command_header(&bytes, max_size)?;
-        if header.size as usize != bytes.len() {
+        let size = parse_packet_size(&bytes, max_size)?;
+        if size as usize != bytes.len() {
             return Err(ParseError::SizeMismatch {
-                declared: header.size,
+                declared: size,
                 actual: bytes.len(),
             });
         }
+        validate_command_tag(&bytes)?;
+        let frame = WireCommand::cast(&bytes)?;
         Ok(Self {
-            code: header.code,
+            code: frame.cc()?,
             bytes,
         })
     }
@@ -58,9 +56,9 @@ impl Command {
         self.code
     }
 
-    /// Return whether this packet carries command type `C`.
-    pub fn is<C: TpmCommand>(&self) -> bool {
-        self.code == C::CMD_CODE
+    /// Return whether this packet carries `code`.
+    pub fn is_code(&self, code: TpmCc) -> bool {
+        self.code == code
     }
 
     /// Complete encoded command.
@@ -77,12 +75,13 @@ impl Response {
     /// Validate a complete TPM response.
     pub fn parse(bytes: Vec<u8>, max_size: usize) -> Result<Self, ParseError> {
         let size = parse_packet_size(&bytes, max_size)?;
-        if size != bytes.len() {
+        if size as usize != bytes.len() {
             return Err(ParseError::SizeMismatch {
-                declared: size as u32,
+                declared: size,
                 actual: bytes.len(),
             });
         }
+        WireResponse::cast(&bytes)?;
         Ok(Self(bytes))
     }
 
@@ -99,7 +98,7 @@ impl Response {
 
 /// Read the packet size declared by a TPM header.
 pub fn packet_size_from_header(header: &[u8], max_size: usize) -> Result<usize, ParseError> {
-    parse_packet_header(header, max_size).map(|header| header.size as usize)
+    parse_packet_size(header, max_size).map(|size| size as usize)
 }
 
 /// TPM packet validation failure.
@@ -130,6 +129,9 @@ pub enum ParseError {
         /// Actual buffer length.
         actual: usize,
     },
+    /// TPM protocol validation failed.
+    #[error("malformed TPM packet: {0}")]
+    Protocol(#[from] TpmError),
 }
 
 /// Read and validate one command from an async byte stream.
@@ -146,45 +148,34 @@ pub async fn read_command(
     }
     stream.read_exact(&mut header[1..]).await?;
 
-    let parsed = parse_command_header(&header, max_size).map_err(invalid_data)?;
-    let mut bytes = vec![0u8; parsed.size as usize];
+    let size = parse_packet_size(&header, max_size).map_err(invalid_data)?;
+    let mut bytes = vec![0u8; size as usize];
     bytes[..HEADER_SIZE].copy_from_slice(&header);
     stream.read_exact(&mut bytes[HEADER_SIZE..]).await?;
 
-    Ok(Some(Command {
-        code: parsed.code,
-        bytes,
-    }))
+    Command::parse(bytes, max_size)
+        .map(Some)
+        .map_err(invalid_data)
 }
 
-fn parse_command_header(bytes: &[u8], max_size: usize) -> Result<CmdHeader, ParseError> {
+fn parse_packet_size(bytes: &[u8], max_size: usize) -> Result<u32, ParseError> {
     if bytes.len() < HEADER_SIZE {
         return Err(ParseError::ShortHeader);
     }
-    let mut buffer = UnmarshalBuf::new(bytes);
-    let header = CmdHeader::try_unmarshal(&mut buffer).map_err(|_| ParseError::ShortHeader)?;
-    if !matches!(
-        header.tag,
-        TpmiStCommandTag::NoSessions | TpmiStCommandTag::Sessions
-    ) {
-        return Err(ParseError::InvalidCommandTag(header.tag.0));
-    }
-    validate_packet_size(header.size, max_size)?;
-    Ok(header)
+    let size = u32::from_be_bytes(bytes[2..6].try_into().expect("slice length checked"));
+    validate_packet_size(size, max_size)?;
+    Ok(size)
 }
 
-fn parse_packet_size(bytes: &[u8], max_size: usize) -> Result<usize, ParseError> {
-    parse_packet_header(bytes, max_size).map(|header| header.size as usize)
-}
-
-fn parse_packet_header(bytes: &[u8], max_size: usize) -> Result<RespHeader, ParseError> {
+fn validate_command_tag(bytes: &[u8]) -> Result<(), ParseError> {
     if bytes.len() < HEADER_SIZE {
         return Err(ParseError::ShortHeader);
     }
-    let mut buffer = UnmarshalBuf::new(bytes);
-    let header = RespHeader::try_unmarshal(&mut buffer).map_err(|_| ParseError::ShortHeader)?;
-    validate_packet_size(header.size, max_size)?;
-    Ok(header)
+    let raw = u16::from_be_bytes(bytes[..2].try_into().expect("slice length checked"));
+    match TpmSt::try_from(raw) {
+        Ok(TpmSt::NoSessions | TpmSt::Sessions) => Ok(()),
+        _ => Err(ParseError::InvalidCommandTag(raw)),
+    }
 }
 
 fn validate_packet_size(size: u32, max_size: usize) -> Result<(), ParseError> {
@@ -207,11 +198,10 @@ fn invalid_data(error: ParseError) -> io::Error {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use tpm2_rs_base::constants::TpmSt;
 
     fn command(code: u32, body: &[u8]) -> Vec<u8> {
         let size = (HEADER_SIZE + body.len()) as u32;
-        let mut bytes = Vec::from(TpmSt::NoSessions.0.to_be_bytes());
+        let mut bytes = Vec::from(TpmSt::NoSessions.value().to_be_bytes());
         bytes.extend_from_slice(&size.to_be_bytes());
         bytes.extend_from_slice(&code.to_be_bytes());
         bytes.extend_from_slice(body);
@@ -222,7 +212,7 @@ mod tests {
     fn parses_command_header() {
         let command = Command::parse(command(0x17b, &[0, 8]), 4096).unwrap();
         assert_eq!(command.code(), TpmCc::GetRandom);
-        assert!(command.is::<tpm2_rs_base::commands::GetRandomCmd>());
+        assert!(command.is_code(TpmCc::GetRandom));
     }
 
     #[test]

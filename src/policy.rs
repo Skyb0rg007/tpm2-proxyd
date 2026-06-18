@@ -12,7 +12,7 @@
 #![allow(dead_code)] // Main/config wiring is implemented in a later change.
 
 use serde::{Deserialize, Serialize};
-use tpm2_rs_base::constants::TpmCc;
+use tpm2_protocol::data::TpmCc;
 
 use crate::{scheduler::Priority, server::peer::Peer, tpm::Command};
 
@@ -68,7 +68,7 @@ impl Default for CommandRule {
 
 mod command_codes {
     use serde::{Deserialize, Deserializer, Serialize, Serializer};
-    use tpm2_rs_base::constants::TpmCc;
+    use tpm2_protocol::data::TpmCc;
 
     pub fn serialize<S>(commands: &[TpmCc], serializer: S) -> Result<S::Ok, S::Error>
     where
@@ -76,7 +76,7 @@ mod command_codes {
     {
         commands
             .iter()
-            .map(|command| command.0)
+            .map(|command| command.value())
             .collect::<Vec<_>>()
             .serialize(serializer)
     }
@@ -85,8 +85,11 @@ mod command_codes {
     where
         D: Deserializer<'de>,
     {
-        Vec::<u32>::deserialize(deserializer)
-            .map(|commands| commands.into_iter().map(TpmCc).collect())
+        Vec::<u32>::deserialize(deserializer)?
+            .into_iter()
+            .map(TpmCc::try_from)
+            .collect::<Result<Vec<_>, _>>()
+            .map_err(serde::de::Error::custom)
     }
 }
 

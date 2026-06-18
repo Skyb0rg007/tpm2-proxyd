@@ -72,7 +72,7 @@ impl Client {
 
     /// Authorize and execute one parsed TPM command.
     pub async fn execute(&self, command: Command) -> Result<Response, BrokerError> {
-        let code = command.code().0;
+        let code = command.code().value();
         let decision = self
             .broker
             .policy
@@ -129,7 +129,7 @@ mod tests {
     impl Upstream for CountingUpstream {
         async fn transact(&mut self, command: &Command) -> Result<Response, UpstreamError> {
             self.count.fetch_add(1, Ordering::Relaxed);
-            self.codes.lock().unwrap().push(command.code().0);
+            self.codes.lock().unwrap().push(command.code().value());
             let mut response = Vec::from(0x8001u16.to_be_bytes());
             response.extend_from_slice(&10u32.to_be_bytes());
             response.extend_from_slice(&0u32.to_be_bytes());

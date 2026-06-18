@@ -169,9 +169,12 @@ mod tests {
         Command::parse(bytes, 4096).unwrap()
     }
 
+    // A valid success response (`TPM_RC_SUCCESS`) carrying the command code in
+    // its body so each command's response is identifiable in assertions.
     fn success_response(code: u32) -> Response {
         let mut bytes = Vec::from(0x8001u16.to_be_bytes());
-        bytes.extend_from_slice(&10u32.to_be_bytes());
+        bytes.extend_from_slice(&14u32.to_be_bytes());
+        bytes.extend_from_slice(&0u32.to_be_bytes());
         bytes.extend_from_slice(&code.to_be_bytes());
         Response::parse(bytes, 4096).unwrap()
     }
@@ -186,14 +189,14 @@ mod tests {
     impl Upstream for RecordingUpstream {
         async fn transact(&mut self, command: &Command) -> Result<Response, UpstreamError> {
             let is_first = self.calls.lock().unwrap().is_empty();
-            self.calls.lock().unwrap().push(command.code().0);
+            self.calls.lock().unwrap().push(command.code().value());
             if is_first {
                 if let Some(started) = self.first_started.take() {
                     let _ = started.send(());
                 }
                 self.release_first.acquire().await.unwrap().forget();
             }
-            Ok(success_response(command.code().0))
+            Ok(success_response(command.code().value()))
         }
     }
 
@@ -214,7 +217,7 @@ mod tests {
         let first_scheduler = scheduler.clone();
         let first = tokio::spawn(async move {
             first_scheduler
-                .execute(Priority(0), raw_command(1))
+                .execute(Priority(0), raw_command(0x17b))
                 .await
                 .unwrap()
         });
@@ -223,14 +226,14 @@ mod tests {
         let low_scheduler = scheduler.clone();
         let low = tokio::spawn(async move {
             low_scheduler
-                .execute(Priority(1), raw_command(2))
+                .execute(Priority(1), raw_command(0x17a))
                 .await
                 .unwrap()
         });
         let high_scheduler = scheduler.clone();
         let high = tokio::spawn(async move {
             high_scheduler
-                .execute(Priority(10), raw_command(3))
+                .execute(Priority(10), raw_command(0x17c))
                 .await
                 .unwrap()
         });
@@ -242,9 +245,18 @@ mod tests {
         }
         release_first.add_permits(1);
 
-        assert_eq!(first.await.unwrap().as_bytes()[9], 1);
-        assert_eq!(high.await.unwrap().as_bytes()[9], 3);
-        assert_eq!(low.await.unwrap().as_bytes()[9], 2);
-        assert_eq!(*calls.lock().unwrap(), [1, 3, 2]);
+        assert_eq!(
+            first.await.unwrap().as_bytes(),
+            success_response(0x17b).as_bytes()
+        );
+        assert_eq!(
+            high.await.unwrap().as_bytes(),
+            success_response(0x17c).as_bytes()
+        );
+        assert_eq!(
+            low.await.unwrap().as_bytes(),
+            success_response(0x17a).as_bytes()
+        );
+        assert_eq!(*calls.lock().unwrap(), [0x17b, 0x17c, 0x17a]);
     }
 }
