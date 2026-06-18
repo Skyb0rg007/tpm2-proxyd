@@ -43,6 +43,8 @@ mod policy;
 mod scheduler;
 /// Downstream Unix-socket listener and per-connection handling.
 mod server;
+/// Systemd socket activation and watchdog configuration.
+mod systemd;
 /// TPM command/response inspection.
 mod tpm;
 /// Upstream TCTI client (talks to the physical TPM's resource manager).
