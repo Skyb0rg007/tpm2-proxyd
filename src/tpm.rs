@@ -35,6 +35,14 @@ pub struct Command {
 
 impl Command {
     /// Validate a complete TPM command.
+    ///
+    /// The proxy is a firewall in front of the TPM: it only admits commands it
+    /// can decode and inspect. `WireCommand::cast` resolves the command code
+    /// against the `tpm2-protocol` dispatch table, so any unrecognized code —
+    /// including vendor-specific command codes — is rejected here, before policy,
+    /// scheduling, or forwarding. This default-deny stance over the command
+    /// vocabulary is intentional; see `docs/design.md` ("Recognized commands
+    /// only").
     pub fn parse(bytes: Vec<u8>, max_size: usize) -> Result<Self, ParseError> {
         let size = parse_packet_size(&bytes, max_size)?;
         if size as usize != bytes.len() {
