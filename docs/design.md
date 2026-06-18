@@ -94,6 +94,23 @@ connections retain their previously capped priority.
 
 Handle-specific command rules remain future work.
 
+### Recognized commands only
+
+The proxy acts as a firewall in front of the TPM: it only forwards traffic it
+can parse and reason about. Every command is decoded against the `tpm2-protocol`
+command dispatch table before any policy decision is made, so a command whose
+code is not a recognized TPM 2.0 command code — including **vendor-specific
+command codes** — is rejected outright at the parse boundary
+(`tpm::Command::parse`), before it ever reaches policy, the scheduler, or the
+upstream TPM.
+
+This is intentional, and a direct consequence of the firewall posture: an
+unrecognized command cannot be inspected, so it cannot be authorized, and the
+default-deny stance extends to the command vocabulary itself. Forwarding
+vendor-specific or otherwise unrecognized commands is a deliberate non-goal (see
+[Non-goals](#non-goals)); a downstream client that needs them must talk to the
+kernel resource manager directly rather than through the proxy.
+
 ## Scheduling: the TPM is a shared, serial resource
 
 A TPM processes **one command at a time**. Every downstream client ultimately
@@ -192,3 +209,6 @@ scheduler interface is designed to support either.
   kernel RM or `tpm2-abrmd`.
 - Guaranteeing cancellation of an in-flight command — best-effort via TCTI
   `cancel` only.
+- Forwarding vendor-specific or otherwise unrecognized command codes — only
+  commands the proxy can decode and inspect are forwarded; everything else is
+  rejected at the parse boundary (see [Recognized commands only](#recognized-commands-only)).
