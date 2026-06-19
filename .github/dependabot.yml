@@ -12,6 +12,8 @@ updates:
       time: '10:00'
     cooldown:
       default-days: 7
+    commit-message:
+      prefix: 'ci(github-actions)'
 
   - package-ecosystem: 'cargo'
     directory: '/'
@@ -21,3 +23,5 @@ updates:
       time: '10:00'
     cooldown:
       default-days: 7
+    commit-message:
+      prefix: 'build(cargo)'
