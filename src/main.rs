@@ -89,14 +89,7 @@ async fn run(options: cli::Options) -> anyhow::Result<()> {
         .with_context(|| format!("loading config {}", options.config.display()))?
         .policy();
 
-    let upstream = upstream::TpmDeviceUpstream::open(
-        &options.upstream,
-        options.max_packet_size,
-        options.command_timeout(),
-    )
-    .with_context(|| format!("opening upstream TPM device {}", options.upstream.display()))?;
-
-    let scheduler = scheduler::CommandScheduler::start(upstream, options.queue_depth);
+    let (scheduler, upstream_label) = start_scheduler(&options).await?;
     let broker = broker::Broker::new(policy, scheduler);
     let registry = server::registry::ConnectionRegistry::new(options.max_connections);
     let management =
@@ -124,7 +117,7 @@ async fn run(options: cli::Options) -> anyhow::Result<()> {
     let _ = systemd::sd_notify("READY=1");
     tracing::info!(
         socket = %options.socket.display(),
-        upstream = %options.upstream.display(),
+        upstream = upstream_label,
         "tpm2-proxyd ready",
     );
 
@@ -159,6 +152,44 @@ async fn run(options: cli::Options) -> anyhow::Result<()> {
     tracing::info!("tpm2-proxyd stopped");
 
     result
+}
+
+/// Open the configured upstream (swtpm socket or kernel TPM device) and start
+/// the command scheduler. Returns the scheduler and a label for logging.
+async fn start_scheduler(
+    options: &cli::Options,
+) -> anyhow::Result<(scheduler::CommandScheduler, String)> {
+    if let Some(server) = &options.swtpm_server {
+        let server = upstream::swtpm::SwtpmAddr::parse(server);
+        let control = options
+            .swtpm_ctrl
+            .as_deref()
+            .map(upstream::swtpm::SwtpmAddr::parse);
+        let label = format!("swtpm {server}");
+        let upstream = upstream::swtpm::SwtpmUpstream::open(
+            server,
+            control,
+            options.max_packet_size,
+            options.command_timeout(),
+        )
+        .await
+        .with_context(|| format!("connecting to {label}"))?;
+        Ok((
+            scheduler::CommandScheduler::start(upstream, options.queue_depth),
+            label,
+        ))
+    } else {
+        let upstream = upstream::TpmDeviceUpstream::open(
+            &options.upstream,
+            options.max_packet_size,
+            options.command_timeout(),
+        )
+        .with_context(|| format!("opening upstream TPM device {}", options.upstream.display()))?;
+        Ok((
+            scheduler::CommandScheduler::start(upstream, options.queue_depth),
+            options.upstream.display().to_string(),
+        ))
+    }
 }
 
 /// Install a `tracing` subscriber driven by `RUST_LOG` (default `info`).

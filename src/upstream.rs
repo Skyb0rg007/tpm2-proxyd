@@ -25,6 +25,9 @@
 
 #![allow(dead_code)] // Wired into main once daemon construction is implemented.
 
+/// Upstream transport backed by a swtpm software TPM over sockets.
+pub mod swtpm;
+
 use std::{error::Error, path::Path, sync::mpsc, thread, time::Duration};
 
 use async_trait::async_trait;
