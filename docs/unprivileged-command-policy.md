@@ -39,6 +39,101 @@ Ownership can mean either **connection-owned** (created on this socket) or
 A deployment should choose which scope it trusts. Peer-owned policy requires a
 durable provenance database keyed by handle/name, not just the raw handle value.
 
+## Windows TBS Comparison Comments
+
+Microsoft's public TBS documentation describes the relevant unprivileged policy
+surface as command blocking: Windows 8 and later allow standard users to access
+TBS, but restrict command execution; for TPM 2.0 the blocking logic is inverted
+into an allowlist, and newer Windows releases fix the TPM 2.0 allowlist in the
+TPM driver instead of exposing it through mutable registry policy. The same
+documentation also describes context-bound resource virtualization for keys and
+sessions. Those virtual-handle mechanics are not counted as differences here:
+when TBS can make a command safe by restricting it to resources created in the
+caller's context, this matrix treats that as equivalent to `tpm2-proxyd`
+tracked-owner handling.
+
+The commands below are handled differently in this document because the proposed
+Linux policy needs conditions that are not expressible by TBS's documented
+standard-user command-code allow/block model. Commands not listed here are either
+aligned at the command-code level, differ only in implementation mechanics such
+as handle virtualization, or need confirmation against a tested Windows build's
+fixed driver allowlist.
+
+Sources: Microsoft, "Command Blocking",
+<https://learn.microsoft.com/en-us/windows/win32/tbs/command-blocking>;
+Microsoft, "Using TBS",
+<https://learn.microsoft.com/en-us/windows/win32/tbs/using-tbs>; Microsoft,
+"Resource Virtualization",
+<https://learn.microsoft.com/en-us/windows/win32/tbs/resource-virtualization>.
+
+| Command | TBS comparison comment |
+| --- | --- |
+| `TPM_CC_ECC_Parameters` | This policy may restrict curve IDs. TBS command blocking can allow or block the command, but does not expose per-curve policy in the documented standard-user model. |
+| `TPM_CC_Hash` | This policy restricts input size and hierarchy/ticket choices. TBS command blocking is command-code scoped. |
+| `TPM_CC_TestParms` | This policy may restrict algorithms and parameter shapes. TBS command blocking cannot express an approved-parameter subset. |
+| `TPM_CC_EC_Ephemeral` | This policy restricts curves and rate. TBS command blocking cannot express per-curve access. |
+| `TPM_CC_IncrementalSelfTest` | This policy allows only approved algorithms and rate-limited use. TBS command blocking can only allow or block the command for standard users. |
+| `TPM_CC_SelfTest` | This policy allows the command only with denial-of-service controls. TBS command blocking is not a per-caller rate policy. |
+| `TPM_CC_MakeCredential` | This policy restricts target names to public, owned, or approved objects. TBS command blocking cannot express target-name policy. |
+| `TPM_CC_NV_ReadPublic` | This policy limits NV metadata reads to configured ranges. TBS does not virtualize NV storage and its command blocking does not express per-user NV namespaces. |
+| `TPM_CC_ReadPublic` | This policy can hide unowned object metadata unless the object is shared. TBS can isolate virtualized context resources, but command blocking does not express object-metadata privacy policy. |
+| `TPM_CC_RSA_Encrypt` | This policy restricts key ownership/sharing, schemes, and input sizes. TBS command blocking cannot express scheme or size predicates. |
+| `TPM_CC_VerifySignature` | This policy restricts verification keys and schemes. TBS command blocking cannot express per-key or per-scheme constraints. |
+| `TPM_CC_GetCapability` | This policy allows only selected capabilities and may hide handle enumeration. TBS command blocking cannot express per-capability or per-property filtering. |
+| `TPM_CC_GetTestResult` | This policy treats the result as a rate-limited diagnostic read. TBS command blocking has no documented per-caller diagnostic-rate predicate. |
+| `TPM_CC_PCR_Read` | This policy restricts PCR banks and indexes. TBS command blocking cannot express PCR-selection policy. |
+| `TPM_CC_ECC_Encrypt` | This policy restricts keys, curves, schemes, and input sizes. TBS command blocking cannot express those parameter predicates. |
+| `TPM_CC_NV_ReadPublic2` | Same difference as `TPM_CC_NV_ReadPublic`: this policy has NV range rules, while TBS command blocking is command-code scoped. |
+| `TPM_CC_SequenceComplete` | This policy distinguishes ordinary sequence completion from PCR/event completion paths. TBS command blocking cannot express that destination-handle distinction. |
+| `TPM_CC_Duplicate` | This policy requires approved export and target-parent rules. TBS context ownership can isolate handles, but command blocking cannot express duplication/export policy. |
+| `TPM_CC_Load` | This policy ties loaded objects back to prior create/import records or approved import profiles. TBS can virtualize loaded handles, but command blocking cannot validate that provenance relationship. |
+| `TPM_CC_Quote` | This policy restricts PCR selections as well as signing keys. TBS command blocking cannot express PCR-selection constraints. |
+| `TPM_CC_RSA_Decrypt` | This policy restricts schemes and input sizes in addition to key ownership. TBS command blocking cannot express those predicates. |
+| `TPM_CC_SequenceUpdate` | This policy caps sequence chunk sizes. TBS command blocking cannot express per-command payload limits. |
+| `TPM_CC_Sign` | This policy restricts signing schemes and digest sizes. TBS command blocking cannot express those predicates. |
+| `TPM_CC_ContextLoad` | This policy allows only saved contexts previously emitted to the same policy identity and matching recorded metadata. TBS virtualization covers its own context resources, but command blocking cannot express cross-command saved-context provenance. |
+| `TPM_CC_ContextSave` | This policy records saved-context provenance for later authorization. TBS command blocking does not expose that provenance rule as policy. |
+| `TPM_CC_ECDH_KeyGen` | This policy requires an allowed key and treats returned material under local ownership rules. TBS command blocking cannot express key-sharing policy beyond context isolation. |
+| `TPM_CC_EncryptDecrypt` | This policy restricts modes and buffer sizes. TBS command blocking cannot express symmetric-mode or size predicates. |
+| `TPM_CC_PolicyCommandCode` | This policy requires the embedded command code to be one the caller may execute. TBS command blocking cannot inspect policy-session construction at that level. |
+| `TPM_CC_PolicyCounterTimer` | This policy restricts clock/counter operands and offsets. TBS command blocking cannot express operand-level policy. |
+| `TPM_CC_PolicyCpHash` | This policy requires the cpHash to correspond to a command the caller may execute. TBS command blocking cannot derive or validate that policy intent. |
+| `TPM_CC_PolicyLocality` | This policy restricts permitted localities. TBS command blocking cannot express locality-set policy. |
+| `TPM_CC_PolicyNameHash` | This policy restricts referenced names to owned, shared, or approved resources. TBS command blocking cannot express name-set policy. |
+| `TPM_CC_PolicyOr` | This policy restricts accepted branch digests. TBS command blocking cannot express an approved policy-branch set. |
+| `TPM_CC_PolicyTicket` | This policy restricts ticket sources and authorizing keys. TBS command blocking cannot express ticket-source policy. |
+| `TPM_CC_StartAuthSession` | This policy restricts bind, salt, and session-count behavior. TBS virtualizes sessions, but command blocking cannot express bind/salt predicates. |
+| `TPM_CC_PolicyPCR` | This policy restricts PCR banks and indexes. TBS command blocking cannot express PCR-selection policy. |
+| `TPM_CC_PolicyDuplicationSelect` | This policy restricts selected object and parent names. TBS command blocking cannot express duplication-target policy inside a policy session. |
+| `TPM_CC_Commit` | This policy rate-limits use of limited ECC commit counters and restricts keys/curves. TBS command blocking cannot express counter-budget or curve policy. |
+| `TPM_CC_ZGen_2Phase` | This policy restricts keys, sessions, and curves. TBS command blocking cannot express those parameter predicates. |
+| `TPM_CC_PolicyNvWritten` | This policy restricts referenced NV indexes to owned, shared, or approved namespaces. TBS command blocking cannot express NV ownership policy. |
+| `TPM_CC_PolicyTemplate` | This policy accepts only approved template digests. TBS command blocking cannot express object-template policy. |
+| `TPM_CC_EncryptDecrypt2` | Same difference as `TPM_CC_EncryptDecrypt`: this policy restricts modes and buffer sizes, which TBS command blocking cannot express. |
+| `TPM_CC_ECC_Decrypt` | This policy restricts curves, schemes, and input sizes. TBS command blocking cannot express those predicates. |
+| `TPM_CC_PolicyCapability` | This policy restricts capability operands. TBS command blocking cannot express per-capability policy inside a policy session. |
+| `TPM_CC_PolicyParameters` | This policy requires parameter references to match commands the caller may execute. TBS command blocking cannot express that relationship. |
+| `TPM_CC_EvictControl` | This policy creates per-user persistent-handle namespaces and owned-handle deletion rules. TBS command blocking cannot express persistent-handle namespaces. |
+| `TPM_CC_NV_UndefineSpace` | This policy allows deletion only for owned NV indexes inside an allowed namespace. TBS does not virtualize NV storage and command blocking cannot express per-user NV ownership. |
+| `TPM_CC_NV_DefineSpace` | This policy restricts NV index ranges, sizes, and attributes. TBS command blocking cannot express NV namespace or attribute policy. |
+| `TPM_CC_NV_Increment` | This policy allows mutation only of owned counter indexes. TBS command blocking cannot express per-index ownership. |
+| `TPM_CC_NV_SetBits` | This policy allows mutation only of owned bit-field indexes. TBS command blocking cannot express per-index ownership. |
+| `TPM_CC_NV_Extend` | This policy allows mutation only of owned extend indexes. TBS command blocking cannot express per-index ownership. |
+| `TPM_CC_NV_Write` | This policy allows writes only to owned NV indexes with size/rate limits. TBS command blocking cannot express per-index write policy. |
+| `TPM_CC_NV_WriteLock` | This policy prevents users from locking shared or untracked indexes. TBS command blocking cannot express per-index lock ownership. |
+| `TPM_CC_NV_ChangeAuth` | This policy allows authorization changes only for owned NV indexes. TBS command blocking cannot express per-index ownership. |
+| `TPM_CC_PolicyNV` | This policy restricts the authorizing NV index to owned, public-readable, or shared indexes. TBS command blocking cannot express NV-index predicates inside policy construction. |
+| `TPM_CC_NV_Read` | This policy distinguishes owned, shared, and public-readable indexes. TBS command blocking cannot express per-index read policy. |
+| `TPM_CC_NV_ReadLock` | This policy prevents users from read-locking shared or untracked indexes. TBS command blocking cannot express per-index lock ownership. |
+| `TPM_CC_NV_Certify` | This policy combines NV read policy with signing-key policy. TBS command blocking cannot express that multi-resource predicate. |
+| `TPM_CC_PolicyAuthorizeNV` | This policy restricts the authorizing NV index to owned, shared, or administrator-approved indexes. TBS command blocking cannot express NV-index predicates inside policy construction. |
+| `TPM_CC_NV_DefineSpace2` | Same difference as `TPM_CC_NV_DefineSpace`: this policy restricts NV ranges, sizes, and attributes. |
+| `TPM_CC_CreatePrimary` | This policy restricts hierarchy, auth, policy, algorithms, and object attributes before recording ownership. TBS can virtualize returned handles, but command blocking cannot express template policy. |
+| `TPM_CC_Create` | This policy restricts parent ownership and object templates. TBS command blocking cannot express object-template policy. |
+| `TPM_CC_Import` | This policy restricts imported-object templates and duplication policy. TBS command blocking cannot express import-profile policy. |
+| `TPM_CC_LoadExternal` | This policy treats public-only and private external loads differently and constrains templates. TBS command blocking cannot express that distinction. |
+| `TPM_CC_CreateLoaded` | This policy restricts parent/hierarchy and object template before recording ownership. TBS command blocking cannot express template policy. |
+
 ## Command Handling Groups
 
 The groups below contain the same commands as `docs/tpm2-protocol-commands.md`, but sorted by the default policy shape recommended for unprivileged access.
