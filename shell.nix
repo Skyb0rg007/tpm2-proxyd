@@ -23,5 +23,6 @@ pkgs.mkShell {
     pkgs.clippy
     pkgs.cargo-license
     pkgs.commitlint
+    pkgs.asciidoctor
   ];
 }

@@ -5,18 +5,38 @@
 {
   lib,
   rustPlatform,
+  asciidoctor,
   pkg-config,
   openssl,
+  installShellFiles,
 }:
 rustPlatform.buildRustPackage (finalAttrs: {
   pname = "tpm2-proxyd";
   version = "0.1.0";
   src = lib.sources.cleanSource ../.;
 
-  cargoHash = "sha256-YkOzkXctxJaLJ6nwUV31IbliRrx95TqOZiBW++ifhlw=";
+  cargoHash = "sha256-E78V62MU5cGOIeZV6hwc2QUnfTP3kwIG21Idnq+YyTc=";
 
-  nativeBuildInputs = [ pkg-config ];
+  nativeBuildInputs = [
+    asciidoctor
+    pkg-config
+    installShellFiles
+  ];
   buildInputs = [ openssl ];
+
+  postBuild = ''
+    asciidoctor -b manpage -o tpm2-proxyd.8 dist/tpm2-proxyd.8.adoc
+  '';
+
+  postInstall = ''
+    install -Dm0644 dist/tpm2-proxyd.service \
+      "$out/lib/systemd/system/tpm2-proxyd.service"
+    install -Dm0644 dist/tpm2-proxyd.socket \
+      "$out/lib/systemd/system/tpm2-proxyd.socket"
+    install -Dm0644 dist/tpm2-proxyd.sysusers \
+      "$out/lib/sysusers.d/tpm2-proxyd.conf"
+    installManPage tpm2-proxyd.8
+  '';
 
   meta = {
     description = "Proxy service for TPM2 Commands";

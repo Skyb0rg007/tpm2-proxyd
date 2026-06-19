@@ -1,0 +1,91 @@
+// SPDX-FileCopyrightText: 2026 Skye Soss <skye@soss.website>
+//
+// SPDX-License-Identifier: Apache-2.0
+
+= tpm2-proxyd(8)
+Skye Soss
+:doctype: manpage
+:manmanual: System Manager's Manual
+:mansource: tpm2-proxyd
+
+== Name
+
+tpm2-proxyd - per-user access-control proxy for a TPM 2.0 device
+
+== Synopsis
+
+*tpm2-proxyd* [_options_]
+
+== Description
+
+*tpm2-proxyd* is a Linux system service that mediates access to a TPM 2.0
+device. It accepts the raw TPM command/response byte stream from downstream
+clients, inspects each command, checks it against a configurable per-user access
+policy, schedules access to the serial TPM, and forwards permitted commands to
+the upstream Linux kernel resource manager, usually _/dev/tpmrm0_.
+
+It is not a resource manager: handle virtualization and context swapping are
+delegated to the kernel resource manager or *tpm2-abrmd*(8). Commands whose code
+is not a recognized TPM 2.0 command code, including vendor-specific codes, are
+rejected before forwarding.
+
+Downstream clients connect through the *tss2-tcti-proxy* TCTI module, for
+example:
+
+----
+--tcti=proxy:/run/tpm2-proxyd/tpm2-proxyd.sock
+----
+
+== Options
+
+*--config*=_PATH_::
+Policy configuration file. The default is _/etc/tpm2-proxyd/policy.json_.
+
+*--socket*=_PATH_::
+Raw TPM Unix socket clients connect to. The default is
+_/run/tpm2-proxyd/tpm2-proxyd.sock_. Ignored under socket activation.
+
+*--control-socket*=_PATH_::
+Varlink control socket. The default is
+_/run/tpm2-proxyd/website.soss.Tpm2Proxyd_. An empty value disables the control
+interface.
+
+*--upstream*=_PATH_::
+Upstream TPM device. The default is _/dev/tpmrm0_.
+
+*--max-packet-size*=_BYTES_::
+Maximum accepted TPM command or response size.
+
+*--queue-depth*=_COUNT_::
+Maximum number of commands queued for the upstream worker.
+
+*--max-connections*=_COUNT_::
+Maximum concurrent downstream connections. A value of 0 means unlimited.
+
+*--command-timeout-secs*=_SECONDS_::
+Hard per-command timeout. The default is 120 seconds.
+
+== Signals
+
+*SIGTERM*, *SIGINT*::
+Stop accepting connections, drain in-flight commands, and exit.
+
+*SIGHUP*::
+Reload the policy file and atomically replace the active policy.
+
+== Environment
+
+*RUST_LOG*::
+Log filter. The default is _info_.
+
+*NOTIFY_SOCKET*, *WATCHDOG_USEC*, *LISTEN_FDS*::
+Consumed for systemd readiness, watchdog, and socket activation.
+
+== Files
+
+_/etc/tpm2-proxyd/policy.json_::
+Per-user/group access policy.
+
+== See Also
+
+*tpm2-abrmd*(8), *systemd.socket*(5)
