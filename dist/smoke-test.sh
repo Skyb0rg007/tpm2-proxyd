@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # SPDX-FileCopyrightText: 2026 Skye Soss <skye@soss.website>
 #
-# SPDX-License-Identifier: BSD-2-Clause
+# SPDX-License-Identifier: Apache-2.0
 #
 # Manual end-to-end verification against a real (or kernel-RM-backed swtpm) TPM.
 # Runs the daemon on a throwaway socket and drives it through the proxy TCTI with
