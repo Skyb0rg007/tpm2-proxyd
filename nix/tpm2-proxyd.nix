@@ -8,6 +8,7 @@
   asciidoctor,
   pkg-config,
   openssl,
+  swtpm,
   installShellFiles,
 }:
 rustPlatform.buildRustPackage (finalAttrs: {
@@ -15,7 +16,7 @@ rustPlatform.buildRustPackage (finalAttrs: {
   version = "0.1.0";
   src = lib.sources.cleanSource ../.;
 
-  cargoHash = "sha256-E78V62MU5cGOIeZV6hwc2QUnfTP3kwIG21Idnq+YyTc=";
+  cargoHash = "sha256-DYSL7JUo5dxFpudvTJuL3p5dT+iGWmRV8/nwkXN7SXY=";
 
   nativeBuildInputs = [
     asciidoctor
@@ -23,6 +24,10 @@ rustPlatform.buildRustPackage (finalAttrs: {
     installShellFiles
   ];
   buildInputs = [ openssl ];
+
+  nativeCheckInputs = [
+    swtpm
+  ];
 
   postBuild = ''
     asciidoctor -b manpage -o tpm2-proxyd.8 dist/tpm2-proxyd.8.adoc

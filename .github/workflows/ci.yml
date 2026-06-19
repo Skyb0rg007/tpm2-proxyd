@@ -20,7 +20,7 @@ jobs:
       - name: Build
         run: nix-shell --run "cargo build --workspace --locked"
       - name: Test
-        run: nix-shell --run "cargo test --workspace --locked"
+        run: nix-shell --run "cargo nextest run --workspace --locked"
       - name: Clippy
         run: nix-shell --run "cargo clippy --workspace --all-targets --locked -- -D warnings"
       - name: Format
