@@ -1,0 +1,21 @@
+# SPDX-FileCopyrightText: 2026 Skye Soss <skye@soss.website>
+#
+# SPDX-License-Identifier: BSD-2-Clause
+
+[Unit]
+Description=tpm2-proxyd raw TPM access socket
+Documentation=man:tpm2-proxyd(8)
+
+[Socket]
+# Downstream TCTI clients (tss2-tcti-proxy) connect here. The daemon picks this
+# socket up via socket activation (sd_listen_fds).
+ListenStream=/run/tpm2-proxyd/tpm2-proxyd.sock
+SocketMode=0660
+SocketUser=tpm2-proxyd
+# Members of this group may reach the proxy; per-user access is then decided by
+# the daemon's policy. Change it to whichever group your TPM users belong to.
+SocketGroup=tss
+RemoveOnStop=true
+
+[Install]
+WantedBy=sockets.target

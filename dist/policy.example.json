@@ -1,0 +1,16 @@
+{
+  "users": [
+    {
+      "uid": 1000,
+      "commands": [379, 378],
+      "priority": 5
+    }
+  ],
+  "groups": [
+    {
+      "gid": 1001,
+      "commands": [],
+      "priority": 1
+    }
+  ]
+}

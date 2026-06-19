@@ -1,0 +1,81 @@
+.\" SPDX-FileCopyrightText: 2026 Skye Soss <skye@soss.website>
+.\"
+.\" SPDX-License-Identifier: BSD-2-Clause
+.TH TPM2-PROXYD 8 "2026" "tpm2-proxyd" "System Manager's Manual"
+.SH NAME
+tpm2-proxyd \- per-user access-control proxy for a TPM 2.0 device
+.SH SYNOPSIS
+.B tpm2-proxyd
+.RI [ options ]
+.SH DESCRIPTION
+.B tpm2-proxyd
+is a Linux system service that mediates access to a TPM 2.0 device. It accepts
+the raw TPM command/response byte stream from downstream clients, inspects each
+command, checks it against a configurable per-user access policy, schedules
+access to the serial TPM, and forwards permitted commands to the upstream Linux
+kernel resource manager
+.RI ( /dev/tpmrm0 ).
+.PP
+It is not a resource manager: handle virtualization and context swapping are
+delegated to the kernel resource manager or
+.BR tpm2-abrmd (8).
+Commands whose code is not a recognized TPM 2.0 command code (including
+vendor-specific codes) are rejected before forwarding.
+.PP
+Downstream clients connect through the
+.B tss2-tcti-proxy
+TCTI module, for example
+.BR --tcti=proxy:/run/tpm2-proxyd/tpm2-proxyd.sock .
+.SH OPTIONS
+.TP
+.BI --config= PATH
+Policy configuration file (default
+.IR /etc/tpm2-proxyd/policy.json ).
+.TP
+.BI --socket= PATH
+Raw TPM Unix socket clients connect to (default
+.IR /run/tpm2-proxyd/tpm2-proxyd.sock ).
+Ignored under socket activation.
+.TP
+.BI --control-socket= PATH
+Varlink control socket (default
+.IR /run/tpm2-proxyd/website.soss.Tpm2Proxyd ).
+An empty value disables the control interface.
+.TP
+.BI --upstream= PATH
+Upstream TPM device (default
+.IR /dev/tpmrm0 ).
+.TP
+.BI --max-packet-size= BYTES
+Maximum accepted TPM command or response size.
+.TP
+.BI --queue-depth= COUNT
+Maximum number of commands queued for the upstream worker.
+.TP
+.BI --max-connections= COUNT
+Maximum concurrent downstream connections (0 = unlimited).
+.TP
+.BI --command-timeout-secs= SECONDS
+Hard per-command timeout (default 120).
+.SH SIGNALS
+.TP
+.B SIGTERM ", " SIGINT
+Stop accepting connections, drain in-flight commands, and exit.
+.TP
+.B SIGHUP
+Reload the policy file and atomically replace the active policy.
+.SH ENVIRONMENT
+.TP
+.B RUST_LOG
+Log filter (default
+.IR info ).
+.TP
+.B NOTIFY_SOCKET ", " WATCHDOG_USEC ", " LISTEN_FDS
+Consumed for systemd readiness, watchdog, and socket activation.
+.SH FILES
+.TP
+.I /etc/tpm2-proxyd/policy.json
+Per-user/group access policy.
+.SH SEE ALSO
+.BR tpm2-abrmd (8),
+.BR systemd.socket (5)

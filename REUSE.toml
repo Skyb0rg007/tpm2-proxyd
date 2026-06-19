@@ -1,6 +1,6 @@
 version = 1
 
 [[annotations]]
-path = [ "Cargo.lock" ]
+path = [ "Cargo.lock", "dist/policy.example.json" ]
 SPDX-License-Identifier = "BSD-2-Clause"
 SPDX-FileCopyrightText = "2026 Skye Soss"
