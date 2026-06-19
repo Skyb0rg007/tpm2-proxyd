@@ -11,6 +11,7 @@
 #   PREFIX    install prefix for the binary (default /usr)
 #   LIBDIR    directory for the TCTI shared library (default $PREFIX/lib)
 #   UNITDIR   systemd unit directory (default /usr/lib/systemd/system)
+#   MANDIR    man page directory (default $PREFIX/share/man)
 
 set -euo pipefail
 
@@ -18,11 +19,14 @@ DESTDIR="${DESTDIR:-}"
 PREFIX="${PREFIX:-/usr}"
 LIBDIR="${LIBDIR:-$PREFIX/lib}"
 UNITDIR="${UNITDIR:-/usr/lib/systemd/system}"
+MANDIR="${MANDIR:-$PREFIX/share/man}"
 
 here="$(cd "$(dirname "$0")/.." && pwd)"
 
 echo "Building release artifacts..."
 cargo build --release --workspace --manifest-path "$here/Cargo.toml"
+asciidoctor -b manpage -o "$here/target/release/tpm2-proxyd.8" \
+  "$here/dist/tpm2-proxyd.8.adoc"
 
 install -Dm0755 "$here/target/release/tpm2-proxyd" \
   "$DESTDIR$PREFIX/bin/tpm2-proxyd"
@@ -37,8 +41,8 @@ install -Dm0644 "$here/dist/tpm2-proxyd.service" "$DESTDIR$UNITDIR/tpm2-proxyd.s
 install -Dm0644 "$here/dist/tpm2-proxyd.socket" "$DESTDIR$UNITDIR/tpm2-proxyd.socket"
 install -Dm0644 "$here/dist/tpm2-proxyd.sysusers" \
   "$DESTDIR/usr/lib/sysusers.d/tpm2-proxyd.conf"
-install -Dm0644 "$here/dist/tpm2-proxyd.8" \
-  "$DESTDIR$PREFIX/share/man/man8/tpm2-proxyd.8"
+install -Dm0644 "$here/target/release/tpm2-proxyd.8" \
+  "$DESTDIR$MANDIR/man8/tpm2-proxyd.8"
 
 # Install an example policy without clobbering an existing one.
 config="$DESTDIR/etc/tpm2-proxyd/policy.json"
