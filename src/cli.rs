@@ -62,6 +62,15 @@ pub struct Options {
         value_parser = parse_path
     )]
     pub upstream: PathBuf,
+    /// Use a swtpm data socket as the upstream instead of `--upstream`.
+    ///
+    /// Accepts `unix:<path>`, `tcp:<host:port>`, a path, or `host:port`.
+    #[arg(long, require_equals = true, value_name = "ADDR")]
+    pub swtpm_server: Option<String>,
+    /// swtpm control socket. When set, the TPM is initialized (CMD_INIT) on
+    /// startup, so downstream clients must issue TPM2_Startup.
+    #[arg(long, require_equals = true, value_name = "ADDR")]
+    pub swtpm_ctrl: Option<String>,
     /// Maximum accepted TPM command or response size.
     #[arg(
         long,

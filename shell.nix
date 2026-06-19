@@ -24,5 +24,6 @@ pkgs.mkShell {
     pkgs.cargo-license
     pkgs.commitlint
     pkgs.asciidoctor
+    pkgs.swtpm
   ];
 }

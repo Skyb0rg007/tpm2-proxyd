@@ -53,6 +53,15 @@ interface.
 *--upstream*=_PATH_::
 Upstream TPM device. The default is _/dev/tpmrm0_.
 
+*--swtpm-server*=_ADDR_::
+Use a swtpm software TPM as the upstream instead of *--upstream*. _ADDR_ is the
+swtpm data socket: *unix:*_path_, *tcp:*_host:port_, a path, or _host:port_.
+
+*--swtpm-ctrl*=_ADDR_::
+swtpm control socket (same address forms as *--swtpm-server*). When set, the TPM
+is reset on startup (CMD_INIT followed by TPM2_Startup); otherwise commands are
+passed straight through to an already-started swtpm.
+
 *--max-packet-size*=_BYTES_::
 Maximum accepted TPM command or response size.
 

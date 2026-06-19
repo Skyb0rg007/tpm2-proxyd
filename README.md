@@ -108,12 +108,34 @@ tpm2_getrandom --tcti=proxy:/run/tpm2-proxyd/tpm2-proxyd.sock 8
 export TPM2TOOLS_TCTI=proxy:/run/tpm2-proxyd/tpm2-proxyd.sock
 ```
 
+## Using swtpm instead of a hardware TPM
+
+For development and testing, the proxy can talk to a [swtpm][] software TPM over
+its socket interface instead of `/dev/tpmrm0`:
+
+```sh
+swtpm socket --tpm2 --tpmstate dir=/tmp/swtpm \
+  --server type=unixio,path=/tmp/swtpm/sock \
+  --ctrl type=unixio,path=/tmp/swtpm/sock.ctrl --flags startup-clear &
+
+tpm2-proxyd --config=policy.json --socket=/tmp/proxy.sock \
+  --swtpm-server=unix:/tmp/swtpm/sock
+```
+
+`--swtpm-server` accepts `unix:<path>`, `tcp:<host:port>`, a path, or
+`host:port`. Pass `--swtpm-ctrl=<addr>` to have the proxy reset and start the
+swtpm itself (CMD_INIT + `TPM2_Startup`) on launch; otherwise start swtpm with
+`--flags startup-clear` so the TPM is already up. `dist/smoke-test.sh` exercises
+this whole path.
+
+[swtpm]: https://github.com/stefanberger/swtpm
+
 ## Command-line options
 
 See `tpm2-proxyd --help` or `man 8 tpm2-proxyd`. Common options:
 `--config`, `--socket`, `--control-socket` (empty to disable), `--upstream`,
-`--max-connections`, `--command-timeout-secs`. Logging is controlled by
-`RUST_LOG` (default `info`).
+`--swtpm-server`/`--swtpm-ctrl`, `--max-connections`, `--command-timeout-secs`.
+Logging is controlled by `RUST_LOG` (default `info`).
 
 ## Control interface
 
