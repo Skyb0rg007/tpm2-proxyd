@@ -82,9 +82,26 @@ impl RawTpmListener<UnixPeerResolver> {
     pub fn from_listener(inner: UnixListener) -> Self {
         Self::from_listener_with_resolver(inner, UnixPeerResolver)
     }
+
+    /// Use a systemd socket-activation fd if one was passed, else bind `path`.
+    ///
+    /// With socket activation the listening socket is created (and its
+    /// permissions/ownership set) by the `.socket` unit; otherwise the daemon
+    /// binds `path` itself via [`Self::bind_prepared`].
+    pub fn from_systemd_or_bind(path: impl AsRef<Path>) -> io::Result<Self> {
+        if let Ok(mut fds) = crate::systemd::sd_listen_fds()
+            && fds.len() == 1
+        {
+            let fd = fds.pop().expect("exactly one fd");
+            let listener = std::os::unix::net::UnixListener::from(fd);
+            listener.set_nonblocking(true)?;
+            return Ok(Self::from_listener(UnixListener::from_std(listener)?));
+        }
+        Self::bind_prepared(path)
+    }
 }
 
-fn prepare_socket_path(path: &Path) -> io::Result<()> {
+pub(crate) fn prepare_socket_path(path: &Path) -> io::Result<()> {
     if let Some(parent) = path
         .parent()
         .filter(|parent| !parent.as_os_str().is_empty())
@@ -189,6 +206,7 @@ mod tests {
             uid: 1000,
             primary_gid: 100,
             supplementary_gids: vec![42],
+            pid: None,
         };
         let accepted = accept_stream(&StaticPeerResolver(peer.clone()), server).unwrap();
 
