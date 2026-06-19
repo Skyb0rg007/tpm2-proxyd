@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # SPDX-FileCopyrightText: 2026 Skye Soss <skye@soss.website>
 #
-# SPDX-License-Identifier: BSD-2-Clause
+# SPDX-License-Identifier: Apache-2.0
 #
 # Build and install tpm2-proxyd, its downstream TCTI module, and the systemd
 # integration. Run as root (or with a DESTDIR for packaging).
