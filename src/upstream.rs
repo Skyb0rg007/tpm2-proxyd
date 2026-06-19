@@ -25,7 +25,7 @@
 
 #![allow(dead_code)] // Wired into main once daemon construction is implemented.
 
-use std::{error::Error, path::Path, sync::mpsc, thread};
+use std::{error::Error, path::Path, sync::mpsc, thread, time::Duration};
 
 use async_trait::async_trait;
 use tokio::sync::oneshot;
@@ -75,10 +75,18 @@ struct DeviceRequest {
 impl TpmDeviceUpstream {
     /// Open `path` (such as `/dev/tpmrm0`) and start the upstream worker thread.
     ///
+    /// `command_timeout` is the hard per-command time limit: `tpm2-device`
+    /// abandons a transaction whose response does not arrive within it, which
+    /// frees the worker (and the clients queued behind it) from a wedged TPM.
+    ///
     /// The TPM device is opened on the worker thread itself, since [`TpmDevice`]
     /// cannot cross threads. This call blocks until the device is open, so a
     /// failure to open it is reported synchronously.
-    pub fn open(path: impl AsRef<Path>, max_response_size: usize) -> Result<Self, TpmDeviceError> {
+    pub fn open(
+        path: impl AsRef<Path>,
+        max_response_size: usize,
+        command_timeout: Duration,
+    ) -> Result<Self, TpmDeviceError> {
         let path = path.as_ref().to_path_buf();
         let (requests, incoming) = mpsc::channel::<DeviceRequest>();
         let (ready_tx, ready_rx) = mpsc::channel::<Result<(), TpmDeviceError>>();
@@ -86,7 +94,11 @@ impl TpmDeviceUpstream {
         thread::Builder::new()
             .name("tpm-device".to_owned())
             .spawn(move || {
-                let mut device = match TpmDevice::builder().with_path(&path).build() {
+                let mut device = match TpmDevice::builder()
+                    .with_path(&path)
+                    .with_timeout(command_timeout)
+                    .build()
+                {
                     Ok(device) => {
                         let _ = ready_tx.send(Ok(()));
                         device

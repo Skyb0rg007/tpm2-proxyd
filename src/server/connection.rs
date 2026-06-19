@@ -10,16 +10,21 @@
 
 #![allow(dead_code)] // Wired into main once daemon construction is implemented.
 
-use std::{future::Future, io};
+use std::{future::Future, io, time::Duration};
 
 use tokio::io::{AsyncRead, AsyncWrite, AsyncWriteExt};
+use tokio::sync::watch;
+use tokio::task::JoinSet;
 
 use crate::{
     broker::{Broker, BrokerError, Client},
     scheduler::Priority,
-    server::peer::Peer,
+    server::{peer::Peer, registry::ConnectionRegistry},
     tpm::{self, Command, Response},
 };
+
+/// How long shutdown waits for in-flight connections to drain before aborting.
+const SHUTDOWN_GRACE: Duration = Duration::from_secs(10);
 
 /// A connected client capable of exchanging framed TPM packets.
 pub trait ClientStream: Send + 'static {
@@ -146,34 +151,98 @@ where
 pub async fn serve_listener<L>(
     mut listener: L,
     broker: Broker,
+    registry: ConnectionRegistry,
     max_command_size: usize,
+    mut shutdown: watch::Receiver<bool>,
 ) -> io::Result<()>
 where
     L: Listener,
 {
+    let mut tasks: JoinSet<()> = JoinSet::new();
+
     loop {
-        let accepted = listener.accept().await?;
-        let client = broker.admit(accepted.peer, accepted.requested_priority);
-        tokio::spawn(async move {
-            if let Err(error) = serve_connection(accepted.stream, client, max_command_size).await {
-                tracing::debug!(%error, "downstream TPM connection closed with an error");
+        tokio::select! {
+            changed = shutdown.changed() => {
+                // The sender was dropped or signalled shutdown: stop accepting.
+                if changed.is_err() || *shutdown.borrow() {
+                    break;
+                }
             }
-        });
+            accepted = listener.accept() => {
+                let accepted = accepted?;
+                let peer = accepted.peer;
+                let client = broker.admit(peer.clone(), accepted.requested_priority);
+                let Some(guard) = registry.register(&peer, client.priority()) else {
+                    tracing::warn!(uid = peer.uid, "connection limit reached; rejecting client");
+                    continue;
+                };
+                let connection_shutdown = shutdown.clone();
+                let stream = accepted.stream;
+                tasks.spawn(async move {
+                    let _guard = guard;
+                    if let Err(error) =
+                        serve_connection(stream, client, max_command_size, connection_shutdown)
+                            .await
+                    {
+                        tracing::debug!(%error, "downstream TPM connection closed with an error");
+                    }
+                });
+            }
+        }
+    }
+
+    drain(tasks).await;
+    Ok(())
+}
+
+/// Wait for active connection tasks to finish, aborting any that outlast the
+/// shutdown grace period. The tasks observe the same shutdown signal, so they
+/// stop after their current in-flight command.
+async fn drain(mut tasks: JoinSet<()>) {
+    if tasks.is_empty() {
+        return;
+    }
+    tracing::info!(active = tasks.len(), "draining active connections");
+    let drained = tokio::time::timeout(SHUTDOWN_GRACE, async {
+        while tasks.join_next().await.is_some() {}
+    })
+    .await;
+    if drained.is_err() {
+        tracing::warn!("shutdown grace period elapsed; aborting remaining connections");
+        tasks.shutdown().await;
     }
 }
 
-/// Serve commands from one admitted client until EOF or failure.
+/// Serve commands from one admitted client until EOF, shutdown, or failure.
+///
+/// A shutdown signal stops the connection at the next command boundary; a
+/// command already in flight is allowed to finish (the TPM is non-preemptible).
 pub async fn serve_connection<S>(
     mut stream: S,
     client: Client,
     max_command_size: usize,
+    mut shutdown: watch::Receiver<bool>,
 ) -> Result<(), ConnectionError>
 where
     S: ClientStream,
 {
-    while let Some(command) = stream.read_command(max_command_size).await? {
-        let response = client.execute(command).await?;
-        stream.write_response(&response).await?;
+    loop {
+        tokio::select! {
+            changed = shutdown.changed() => {
+                if changed.is_err() || *shutdown.borrow() {
+                    break;
+                }
+            }
+            command = stream.read_command(max_command_size) => {
+                match command? {
+                    None => break,
+                    Some(command) => {
+                        let response = client.execute(command).await?;
+                        stream.write_response(&response).await?;
+                    }
+                }
+            }
+        }
     }
     Ok(())
 }
@@ -256,11 +325,13 @@ mod tests {
         let broker = Broker::new(Policy::allow_all(), scheduler);
         let client_context = broker.admit(Peer::new(1000, 100), Priority(4));
         let (mut client, server) = tokio::io::duplex(256);
+        let (_shutdown_tx, shutdown_rx) = watch::channel(false);
 
         let server_task = tokio::spawn(serve_connection(
             server,
             client_context,
             DEFAULT_MAX_PACKET_SIZE,
+            shutdown_rx,
         ));
 
         client.write_all(&command(0x17b)).await.unwrap();
@@ -285,11 +356,13 @@ mod tests {
         let broker = Broker::new(Policy::new(PolicyConfig::default()), scheduler);
         let client_context = broker.admit(Peer::new(1000, 100), Priority(4));
         let (mut client, server) = tokio::io::duplex(256);
+        let (_shutdown_tx, shutdown_rx) = watch::channel(false);
 
         let server_task = tokio::spawn(serve_connection(
             server,
             client_context,
             DEFAULT_MAX_PACKET_SIZE,
+            shutdown_rx,
         ));
 
         client.write_all(&command(0x17b)).await.unwrap();

@@ -11,7 +11,7 @@
 
 #![allow(dead_code)] // Wired into main once daemon construction is implemented.
 
-use std::{future::Future, path::Path, pin::Pin};
+use std::{future::Future, path::PathBuf, pin::Pin};
 
 use serde::{Deserialize, Serialize};
 use zlink::introspect::{self, CustomType};
@@ -130,7 +130,10 @@ impl VarlinkService {
 }
 
 /// Bind `path` and serve the control interface until the server fails.
-pub async fn run(path: impl AsRef<Path>, control: impl Control + 'static) -> zlink::Result<()> {
+///
+/// The returned future is not `Send` (the `zlink` server is single-task), so
+/// run it on the main task with `tokio::select!` rather than `tokio::spawn`.
+pub async fn run<C: Control + 'static>(path: PathBuf, control: C) -> zlink::Result<()> {
     let listener = zlink::unix::bind(path)?;
     zlink::Server::new(listener, VarlinkService::new(control))
         .run()

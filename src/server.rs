@@ -18,5 +18,11 @@
 pub(crate) mod connection;
 /// Peer credential (uid/gid/pid) resolution from the connected socket.
 pub(crate) mod peer;
+/// Active downstream connection tracking and concurrency cap.
+pub(crate) mod registry;
 /// Raw Unix-domain socket TPM listener.
 pub(crate) mod unix;
+
+/// End-to-end smoke tests over a real Unix socket.
+#[cfg(test)]
+mod smoke;

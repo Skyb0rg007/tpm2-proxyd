@@ -237,6 +237,7 @@ mod tests {
             uid: 1000,
             primary_gid: 100,
             supplementary_gids: vec![42],
+            pid: None,
         };
 
         assert_eq!(policy.authorize(&peer, &command(0x17b)), Decision::Allow);
