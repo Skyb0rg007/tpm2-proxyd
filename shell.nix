@@ -5,14 +5,11 @@
 {
   pkgs ? import <nixpkgs> { },
 }:
+let
+  tpm2-proxyd = pkgs.callPackage ./nix/tpm2-proxyd.nix { };
+in
 pkgs.mkShell {
-  # tpm2-crypto (pulled in by tpm2-device) links against OpenSSL via openssl-sys.
-  nativeBuildInputs = [
-    pkgs.pkg-config
-  ];
-  buildInputs = [
-    pkgs.openssl
-  ];
+  inputsFrom = [ tpm2-proxyd ];
   packages = [
     pkgs.tpm2-tss
     pkgs.cargo
@@ -24,5 +21,6 @@ pkgs.mkShell {
     pkgs.pre-commit
     pkgs.nixfmt
     pkgs.clippy
+    pkgs.cargo-license
   ];
 }
