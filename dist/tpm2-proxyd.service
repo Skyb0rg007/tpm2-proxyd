@@ -1,0 +1,47 @@
+# SPDX-FileCopyrightText: 2026 Skye Soss <skye@soss.website>
+#
+# SPDX-License-Identifier: BSD-2-Clause
+
+[Unit]
+Description=TPM2 Proxy Broker daemon
+Documentation=man:tpm2-proxyd(8)
+Requires=tpm2-proxyd.socket
+After=tpm2-proxyd.socket
+
+[Service]
+Type=notify
+ExecStart=/usr/bin/tpm2-proxyd --config=/etc/tpm2-proxyd/policy.json
+ExecReload=/bin/kill -HUP $MAINPID
+Restart=on-failure
+
+# Readiness/liveness: the daemon sends READY=1 and pings the watchdog.
+WatchdogSec=30
+
+# Run as a dedicated system user (see dist/tpm2-proxyd.sysusers) that is a member
+# of the TPM device group so it can open /dev/tpmrm0.
+User=tpm2-proxyd
+SupplementaryGroups=tss
+RuntimeDirectory=tpm2-proxyd
+RuntimeDirectoryMode=0755
+ConfigurationDirectory=tpm2-proxyd
+
+# Sandboxing. The proxy only needs the TPM resource-manager device and AF_UNIX.
+NoNewPrivileges=true
+ProtectSystem=strict
+ProtectHome=true
+PrivateTmp=true
+PrivateDevices=false
+DeviceAllow=/dev/tpmrm0 rw
+DevicePolicy=closed
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectControlGroups=true
+RestrictAddressFamilies=AF_UNIX
+RestrictNamespaces=true
+LockPersonality=true
+MemoryDenyWriteExecute=true
+SystemCallFilter=@system-service
+SystemCallErrorNumber=EPERM
+
+[Install]
+WantedBy=multi-user.target

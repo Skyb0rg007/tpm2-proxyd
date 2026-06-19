@@ -1,0 +1,6 @@
+# SPDX-FileCopyrightText: 2026 Skye Soss <skye@soss.website>
+#
+# SPDX-License-Identifier: BSD-2-Clause
+
+# System user the daemon runs as. Install to /usr/lib/sysusers.d/tpm2-proxyd.conf.
+u tpm2-proxyd - "TPM2 Proxy Broker daemon" - -
