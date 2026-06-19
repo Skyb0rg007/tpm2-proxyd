@@ -33,15 +33,18 @@ It serves two kinds of traffic:
    carries the length). This upgraded connection is what the downstream
    `tss2-tcti-proxy` module drives.
 
-   **Implementation status:** planned, but blocked on upstream `zlink` support
-   for handing an upgraded connection to the service. The control methods are
-   implemented in the meantime; TPM access will be added when that API is
-   available.
+   **Implementation status:** the protocol upgrade is blocked on upstream `zlink`
+   support for handing an upgraded connection to the service. The control methods
+   (`GetStatus`, `ListConnections`, `ReloadPolicy`) are implemented and served on
+   the control socket today; the upgraded TPM-access method will be added when
+   that API is available.
 
-   Until then, the daemon can expose a raw Unix-domain TPM socket as a temporary
-   TPM-only transport. That listener accepts self-framing TPM command bytes
-   directly, derives the peer UID/GID from Unix socket credentials, and leaves
-   the connection priority entirely to policy rules for that UID/GID.
+   In the meantime the daemon exposes a separate raw Unix-domain TPM socket as
+   the interim TPM transport (created by the daemon or via systemd socket
+   activation). That listener accepts self-framing TPM command bytes directly,
+   derives the peer UID/GID/PID from Unix socket credentials (`SO_PEERCRED`) plus
+   supplementary-group lookup, and leaves the connection priority entirely to
+   policy rules for that UID/GID.
 
 Requesting access explicitly — with a priority — before upgrading means the
 server learns the client's intent and scheduling priority up front and pairs it
@@ -148,9 +151,12 @@ hold a **TPM lease** to transmit a command:
 
 The initial implementation schedules complete commands through a single
 upstream worker. It chooses the highest-priority queued command, preserves FIFO
-order within the same priority, and never preempts an in-flight transaction.
-Timeouts, quotas, and time-slice accounting remain planned rather than active
-in this command path.
+order within the same priority, and never preempts an in-flight transaction. A
+**hard per-command timeout** is active (enforced by `tpm2-device`, configurable
+via `--command-timeout-secs`): a wedged TPM transaction is abandoned so the
+worker — and the clients queued behind it — recover. A **concurrent connection
+cap** (`--max-connections`) bounds resource use. Per-UID quotas and time-slice
+accounting remain planned rather than active in this command path.
 
 - **Mutual exclusion.** Exactly one lease exists; holding it grants exclusive
   use of `upstream`. Released after the response (or timeout).
