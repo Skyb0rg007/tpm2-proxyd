@@ -25,3 +25,14 @@ updates:
       default-days: 7
     commit-message:
       prefix: 'build(cargo)'
+
+  - package-ecosystem: 'pre-commit'
+    directory: '/'
+    schedule:
+      interval: 'weekly'
+      day: 'saturday'
+      time: '10:00'
+    cooldown:
+      default-days: 7
+    commit-message:
+      prefix: 'tooling(pre-commit)'
