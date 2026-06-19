@@ -22,6 +22,7 @@ pkgs.mkShell {
     pkgs.nixfmt
     pkgs.clippy
     pkgs.cargo-license
+    pkgs.cargo-nextest
     pkgs.commitlint
     pkgs.asciidoctor
     pkgs.swtpm

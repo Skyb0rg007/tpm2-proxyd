@@ -1,0 +1,8 @@
+# SPDX-FileCopyrightText: 2026 Skye Soss <skye@soss.website>
+#
+# SPDX-License-Identifier: Apache-2.0
+
+[profile.default]
+# The end-to-end tests each spawn a swtpm and a tpm2-proxyd process, so allow
+# them well beyond the unit-test default before flagging or killing them.
+slow-timeout = { period = "20s", terminate-after = 3 }
