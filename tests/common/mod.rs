@@ -8,8 +8,8 @@
 //! `tpm2-proxyd` wired to it, and drives the proxy over its raw TPM socket (the
 //! same self-framing byte stream the downstream TCTI module speaks). Both child
 //! processes are killed and the temp directory removed on drop, and are also set
-//! to die with the test process (`PR_SET_PDEATHSIG`) so a crashing test never
-//! leaks a swtpm.
+//! to die with the test process via a parent-death signal so a crashing test
+//! never leaks a swtpm.
 //!
 //! Requires `swtpm` on `PATH` (provided by `shell.nix`).
 
@@ -22,6 +22,8 @@ use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Stdio};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::{Duration, Instant};
+
+use rustix::process::{Signal, getuid, set_parent_process_death_signal};
 
 /// TPM command tag with no authorization sessions (`TPM_ST_NO_SESSIONS`).
 pub const NO_SESSIONS: u16 = 0x8001;
@@ -122,8 +124,7 @@ pub fn is_success(response: &[u8]) -> bool {
 
 /// The current process UID, used to scope the proxy policy to this test.
 pub fn current_uid() -> u32 {
-    // SAFETY: `getuid` is always safe to call.
-    unsafe { libc::getuid() }
+    getuid().as_raw()
 }
 
 /// A policy allowing the current user every command.
@@ -287,11 +288,9 @@ fn spawn(program: &str, args: &[String], log: &Path) -> Child {
         .stdout(Stdio::from(log_file))
         .stderr(Stdio::from(stderr));
 
-    // SAFETY: only an async-signal-safe `prctl` runs between fork and exec.
     unsafe {
         command.pre_exec(|| {
-            libc::prctl(libc::PR_SET_PDEATHSIG, libc::SIGKILL as libc::c_ulong);
-            Ok(())
+            set_parent_process_death_signal(Some(Signal::KILL)).map_err(std::io::Error::from)
         });
     }
 

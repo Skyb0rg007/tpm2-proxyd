@@ -948,7 +948,6 @@ dependencies = [
  "anyhow",
  "async-trait",
  "clap",
- "libc",
  "nix 0.31.3",
  "rustix",
  "serde",
