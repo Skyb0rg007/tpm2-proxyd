@@ -22,5 +22,6 @@ pkgs.mkShell {
     pkgs.nixfmt
     pkgs.clippy
     pkgs.cargo-license
+    pkgs.commitlint
   ];
 }

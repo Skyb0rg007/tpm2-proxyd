@@ -4,6 +4,10 @@
 
 # https://pre-commit.com
 
+default_install_hook_types:
+  - pre-commit
+  - pre-push
+  - commit-msg
 repos:
   - repo: https://github.com/pre-commit/pre-commit-hooks
     rev: v6.0.0
@@ -31,3 +35,13 @@ repos:
         entry: reuse lint
         language: unsupported
         pass_filenames: false
+
+      - id: commitlint
+        name: Commitlint hook
+        language: unsupported
+        entry: commitlint --edit
+        pass_filenames: false
+        always_run: true
+        stages:
+          - commit-msg
+          - pre-push
