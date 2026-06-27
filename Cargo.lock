@@ -472,7 +472,6 @@ checksum = "a5e44f723f1133c9deac646763579fdb3ac745e418f2a7af9cd0c431da1f20b9"
 dependencies = [
  "num-integer",
  "num-traits",
- "rand",
 ]
 
 [[package]]
@@ -662,12 +661,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "rustversion"
-version = "1.0.22"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "b39cdef0fa800fc44525c84ccb54a029961a8215f9619753635a9c0d2538d46d"
-
-[[package]]
 name = "ryu"
 version = "1.0.23"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -771,23 +764,22 @@ checksum = "7da8b5736845d9f2fcb837ea5d9e2628564b3b043a70948a3f0b778838c5fb4f"
 
 [[package]]
 name = "strum"
-version = "0.26.3"
+version = "0.28.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "8fec0f0aef304996cf250b31b5a10dee7980c85da9d759361292b8bca5a18f06"
+checksum = "9628de9b8791db39ceda2b119bbe13134770b56c138ec1d3af810d045c04f9bd"
 dependencies = [
  "strum_macros",
 ]
 
 [[package]]
 name = "strum_macros"
-version = "0.26.4"
+version = "0.28.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "4c6bee85a5a24955dc440386795aa378cd9cf82acd5f764469152d2270e581be"
+checksum = "ab85eea0270ee17587ed4156089e10b9e6880ee688791d45a905f5b1ca36f664"
 dependencies = [
  "heck",
  "proc-macro2",
  "quote",
- "rustversion",
  "syn",
 ]
 
@@ -804,31 +796,11 @@ dependencies = [
 
 [[package]]
 name = "thiserror"
-version = "1.0.69"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "b6aaf5339b578ea85b50e080feb250a3e8ae8cfcdff9a461c9ec2904bc923f52"
-dependencies = [
- "thiserror-impl 1.0.69",
-]
-
-[[package]]
-name = "thiserror"
 version = "2.0.18"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "4288b5bcbc7920c07a1149a35cf9590a2aa808e0bc1eafaade0b80947865fbc4"
 dependencies = [
- "thiserror-impl 2.0.18",
-]
-
-[[package]]
-name = "thiserror-impl"
-version = "1.0.69"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "4fee6c4efc90059e10f81e6d42c60a18f76588c3d74cb83a0b242a2b6c7504c1"
-dependencies = [
- "proc-macro2",
- "quote",
- "syn",
+ "thiserror-impl",
 ]
 
 [[package]]
@@ -906,32 +878,30 @@ dependencies = [
 
 [[package]]
 name = "tpm2-crypto"
-version = "0.12.1"
+version = "0.20.4"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "c154a39bae79860f1a560c7a8bcac3db6e1d1eb8127e8d73a431c8c976a6e6d4"
+checksum = "5765826b4304cf0e6288e306a59fce90515fa70bdf90ae9c59ca75a8a7620bc1"
 dependencies = [
  "num-bigint",
  "num-traits",
  "openssl",
- "rand",
  "strum",
- "thiserror 1.0.69",
- "tpm2-protocol",
+ "tpm2-protocol 0.20.2",
 ]
 
 [[package]]
 name = "tpm2-device"
-version = "0.6.1"
+version = "0.20.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "49a09e0df44e6c7eea418bdb47f35d84ec3964750cc75bcd31f0ae2a6d1a0fb3"
+checksum = "506184135db11e58d1bd7e7e1a204bc0c06b2be85453e75ac37fe8174ed33966"
 dependencies = [
  "hex",
  "log",
  "nix 0.29.0",
  "rand",
- "thiserror 1.0.69",
+ "strum",
  "tpm2-crypto",
- "tpm2-protocol",
+ "tpm2-protocol 0.20.2",
  "tracing",
 ]
 
@@ -940,6 +910,12 @@ name = "tpm2-protocol"
 version = "0.19.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "467b65fffdfd21c3c4a6d2a86ba807ce99a3888901fcaa50534f8d443c7d4699"
+
+[[package]]
+name = "tpm2-protocol"
+version = "0.20.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "264f0c30b02816f1ea9f393082da30a31bb91a391cb763f9a199930b12058067"
 
 [[package]]
 name = "tpm2-proxyd"
@@ -952,10 +928,10 @@ dependencies = [
  "rustix",
  "serde",
  "serde_json",
- "thiserror 2.0.18",
+ "thiserror",
  "tokio",
  "tpm2-device",
- "tpm2-protocol",
+ "tpm2-protocol 0.19.0",
  "tracing",
  "tracing-subscriber",
  "zlink",
