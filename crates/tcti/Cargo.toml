@@ -5,8 +5,8 @@
 [package]
 name = "tss2-tcti-proxy"
 version = "0.1.0"
-edition = "2024"
-license = "Apache-2.0"
+edition.workspace = true
+license.workspace = true
 
 [lib]
 # Note: Need to install this as libtss2-tcti-proxy.so
