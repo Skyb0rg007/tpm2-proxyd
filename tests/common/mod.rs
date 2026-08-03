@@ -11,7 +11,7 @@
 //! to die with the test process via a parent-death signal so a crashing test
 //! never leaks a swtpm.
 //!
-//! Requires `swtpm` on `PATH` (provided by `shell.nix`).
+//! Requires `swtpm` on `PATH` (provided by the Nix development shell).
 
 #![allow(dead_code)] // Each test binary uses a subset of the helpers.
 
