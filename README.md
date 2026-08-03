@@ -43,11 +43,14 @@ before forwarding.
 A Nix dev shell provides the toolchain and dependencies:
 
 ```sh
-nix-shell --run "cargo build --release"
+nix develop --command cargo build --release
 ```
 
 This produces `target/release/tpm2-proxyd` and
 `target/release/libtss2_tcti_proxy.so`.
+
+Build the Nix package itself with `nix build`, or run the daemon directly with
+`nix run -- --help`.
 
 ## Installing
 
@@ -150,8 +153,8 @@ varlink call /run/tpm2-proxyd/website.soss.Tpm2Proxyd/website.soss.Tpm2Proxyd.Ge
 ## Development
 
 ```sh
-nix-shell --run "cargo test --workspace"
-nix-shell --run "pre-commit run --all-files"   # treefmt, reuse, editorconfig
+nix develop --command cargo test --workspace
+nix develop --command pre-commit run --all-files   # treefmt, reuse, editorconfig
 ```
 
 See `docs/design.md` for the architecture conventions.
