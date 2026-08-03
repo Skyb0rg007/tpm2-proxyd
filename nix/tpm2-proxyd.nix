@@ -16,7 +16,7 @@ rustPlatform.buildRustPackage (finalAttrs: {
   version = "0.1.0";
   src = lib.sources.cleanSource ../.;
 
-  cargoHash = "sha256-E78V62MU5cGOIeZV6hwc2QUnfTP3kwIG21Idnq+YyTc=";
+  cargoLock.lockFile = ../Cargo.lock;
 
   nativeBuildInputs = [
     asciidoctor
