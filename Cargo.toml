@@ -4,7 +4,7 @@
 
 [workspace]
 resolver = "3"
-members = [ "crates/tpm2-proxyd", "crates/tcti" ]
+members = [ "crates/tpm2-proxyd", "crates/tcti", "crates/tpm2-wire" ]
 default-members = [ "crates/tpm2-proxyd" ]
 
 [workspace.package]
