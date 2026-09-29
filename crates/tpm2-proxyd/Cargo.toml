@@ -22,4 +22,4 @@ tpm2-device = "0.6.1"
 tpm2-protocol = "0.19.0"
 tracing = "0.1.44"
 tracing-subscriber = { version = "0.3.20", features = ["env-filter"] }
-zlink = { version = "0.5.0", features = ["idl-parse"] }
+zlink = { version = "0.7.1", features = ["idl-parse"] }
