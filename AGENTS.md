@@ -42,13 +42,6 @@ daemon) with crates under `crates/`:
   dynamic loader (`tctildr`) into client processes. It forwards the raw TPM
   command/response byte stream to the daemon over a Unix socket (path from the
   TCTI config string, default `/run/tpm2-proxyd/tpm2-proxyd.sock`).
-- `crates/tpm2-wire` — a dependency-free, zero-copy, borrowed-view parser for
-  TPM 2.0 command byte streams (`Command::parse` validates the envelope;
-  `Command::body` decodes handle/parameter areas into a `CommandBody`, with
-  `CommandBody::Other` for command codes that have no decoder yet). It has no
-  marshal direction by design: valid bytes are forwarded unchanged. **Not yet
-  used by the daemon**, which still parses with `tpm2-protocol`; it is intended
-  as the basis for parameter-aware policy.
 
 ### The daemon (`crates/tpm2-proxyd/src/`)
 
@@ -197,9 +190,9 @@ A plain `cargo build` only builds `default-members` (the daemon), not the TCTI
 object file" error.
 
 Tests: in-crate unit tests, `crates/tpm2-proxyd/src/server/smoke.rs` (full
-server stack over a real Unix socket with a fake upstream),
+server stack over a real Unix socket with a fake upstream), and
 `crates/tpm2-proxyd/tests/e2e.rs` (real client → daemon → fresh swtpm per
-test), and `crates/tpm2-wire/tests/parse.rs`.
+test).
 
 The Nix package reads `Cargo.lock` directly (`cargoLock.lockFile`), so there is
 no vendor hash to refresh when dependencies change.
