@@ -134,7 +134,7 @@ impl VarlinkService {
 /// The returned future is not `Send` (the `zlink` server is single-task), so
 /// run it on the main task with `tokio::select!` rather than `tokio::spawn`.
 pub async fn run<C: Control + 'static>(path: PathBuf, control: C) -> zlink::Result<()> {
-    let listener = zlink::unix::bind(path)?;
+    let listener = zlink::tokio::unix::bind(path)?;
     zlink::Server::new(listener, VarlinkService::new(control))
         .run()
         .await
@@ -205,12 +205,8 @@ mod tests {
     #[tokio::test]
     async fn serves_control_methods_and_introspection() {
         let (server_stream, client_stream) = UnixStream::pair().unwrap();
-        server_stream.set_nonblocking(true).unwrap();
-        client_stream.set_nonblocking(true).unwrap();
-        let server_stream =
-            zlink::unix::Stream::from(tokio::net::UnixStream::from_std(server_stream).unwrap());
-        let client_stream =
-            zlink::unix::Stream::from(tokio::net::UnixStream::from_std(client_stream).unwrap());
+        let server_stream = zlink::tokio::unix::Stream::try_from(server_stream).unwrap();
+        let client_stream = zlink::tokio::unix::Stream::try_from(client_stream).unwrap();
 
         let control = TestControl {
             generation: Arc::new(AtomicU64::new(4)),

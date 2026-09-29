@@ -32,7 +32,7 @@ use std::{error::Error, path::Path, sync::mpsc, thread, time::Duration};
 
 use async_trait::async_trait;
 use tokio::sync::oneshot;
-use tpm2_device::{TpmDevice, TpmDeviceError};
+use tpm2_device::{TpmDevice, TpmDeviceError, TpmPosixDevice};
 use tpm2_protocol::{
     TpmMarshal, TpmResult, TpmSized, TpmWriter,
     basic::TpmUint32,
@@ -97,14 +97,14 @@ impl TpmDeviceUpstream {
         thread::Builder::new()
             .name("tpm-device".to_owned())
             .spawn(move || {
-                let mut device = match TpmDevice::builder()
+                let mut device = match TpmPosixDevice::builder()
                     .with_path(&path)
                     .with_timeout(command_timeout)
                     .build()
                 {
-                    Ok(device) => {
+                    Ok(transport) => {
                         let _ = ready_tx.send(Ok(()));
-                        device
+                        TpmDevice::new(Box::new(transport))
                     }
                     Err(error) => {
                         let _ = ready_tx.send(Err(error));
