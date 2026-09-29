@@ -68,12 +68,12 @@ Request flow (also drawn in `main.rs`'s module docs):
 - Upstreams: `TpmDeviceUpstream` (`/dev/tpmrm0` via `tpm2-device`, the
   default) and `upstream/swtpm.rs` (`--swtpm-server=<addr>`, optional
   `--swtpm-ctrl=<addr>`), used by the end-to-end tests.
-- `tpm2-device`'s `TpmDevice` is `!Send` and blocks, so it lives on a dedicated
-  worker thread behind a `Send` channel handle. It only offers a *typed*
-  `transmit`, so `upstream.rs` wraps the raw handle/parameter bytes in a
-  `PassthroughFrame` that re-marshals them verbatim and decodes auth sessions by
-  hand. This was an explicit design choice; don't replace it with a raw
-  `File` transport. Vendor command codes are rejected as a consequence.
+- The `/dev/tpmrm0` leg uses `tpm2-device`'s `TpmPosixDevice` through its raw
+  `TpmTransport` interface (`send`/`recv`): command bytes go out unchanged and
+  the TPM's response bytes, error responses included, come back unchanged.
+  Keep using `tpm2-device` for this rather than a hand-rolled `File`
+  transport. `TpmPosixDevice` is `!Send` and blocks, so it lives on a dedicated
+  worker thread behind a `Send` channel handle.
 - The zlink Varlink server future is not `Send`, so `varlink::run` runs on the
   main task via `tokio::select!` rather than `tokio::spawn` (spawning it trips
   rust-lang/rust#100013).
@@ -129,7 +129,7 @@ systemd `.service`/`.socket` units, a sysusers file, the man page source
 - `tpm2-protocol` / `tpm2-device` — from the `tpm-protocol` GitLab project
   (crates.io). `tpm2-protocol` provides TPM marshalling and the command views
   the daemon uses to inspect traffic; `tpm2-device` is the `/dev/tpmrm0`
-  transport. Bump them together: the upstream passthrough depends on both.
+  transport. Bump them together (`tpm2-device` depends on `tpm2-protocol`).
 - `zlink` — Varlink IPC for the management interface (rather than the D-Bus
   interface used by `tpm2-abrmd`).
 - `tokio` — async runtime for handling concurrent downstream connections.
