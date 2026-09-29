@@ -17,8 +17,12 @@ a resource manager: it does not virtualize transient objects or sessions.
 The daemon serves one Unix socket, `/run/tpm2-proxyd/tpm2-proxyd.sock` by
 default, created by the daemon or by systemd socket activation. The socket is
 `tss:tss 0666`: any local user may connect, and the policy decides per
-connection. The peer's UID, GID and PID come from the socket's credentials
-(`SO_PEERCRED`), plus a lookup of the user's supplementary groups.
+connection. The peer's identity comes from the credentials the kernel recorded
+when it connected: UID, GID and PID from `SO_PEERCRED`, and supplementary groups
+from `SO_PEERGROUPS`. Group rules therefore match the groups the connecting
+process actually holds, which are the groups the kernel checks its permissions
+against, not the groups the user database assigns its user. Reading them never
+consults NSS, so a slow user database can't stall accepting clients.
 
 Every connection opens with a **hello**, then carries TPM traffic:
 
@@ -69,7 +73,7 @@ Once a connection's hello is accepted, each TPM command flows through:
 ```
 
 - `server` owns the socket: it accepts connections, runs the hello, and then
-  runs the per-connection TPM stream. Peer identity comes from `SO_PEERCRED`.
+  runs the per-connection TPM stream. Peer identity comes from `SO_PEERCRED` and `SO_PEERGROUPS`.
 - `broker` runs the per-command pipeline and owns shared state.
 - `policy` answers allow/deny for a `(peer, command)` and bounds the priority a
   peer may request.

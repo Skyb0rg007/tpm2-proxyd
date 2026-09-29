@@ -46,7 +46,8 @@ daemon) with crates under `crates/`:
 ### The daemon (`crates/tpm2-proxyd/src/`)
 
 Request flow (also drawn in `main.rs`'s module docs):
-`server` (accept, `SO_PEERCRED` peer identity, connection registry) →
+`server` (accept, `SO_PEERCRED`/`SO_PEERGROUPS` peer identity, connection
+registry) →
 `broker` (caps priority at admission, authorizes each command against `policy`)
 → `scheduler` (single worker, priority-ordered, one TPM transaction at a time,
 per-client sessions) → `upstream` (the TPM).
