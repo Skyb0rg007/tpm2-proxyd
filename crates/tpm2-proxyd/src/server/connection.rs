@@ -269,7 +269,7 @@ mod tests {
         policy::{Policy, PolicyConfig},
         scheduler::CommandScheduler,
         tpm::{DEFAULT_MAX_PACKET_SIZE, HEADER_SIZE},
-        upstream::{Upstream, UpstreamError},
+        upstream::{SessionId, Upstream, UpstreamError},
     };
 
     use super::*;
@@ -280,7 +280,11 @@ mod tests {
 
     #[async_trait::async_trait]
     impl Upstream for EchoUpstream {
-        async fn transact(&mut self, command: &Command) -> Result<Response, UpstreamError> {
+        async fn transact(
+            &mut self,
+            _session: SessionId,
+            command: &Command,
+        ) -> Result<Response, UpstreamError> {
             self.commands.lock().unwrap().push(command.code().value());
             Ok(Response::parse(response(command.code().value()), DEFAULT_MAX_PACKET_SIZE).unwrap())
         }

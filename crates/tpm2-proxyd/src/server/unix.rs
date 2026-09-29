@@ -168,7 +168,7 @@ mod tests {
         policy::{Policy, PolicyConfig, PriorityRule, Subject},
         scheduler::CommandScheduler,
         tpm::{Command, DEFAULT_MAX_PACKET_SIZE, Response},
-        upstream::{Upstream, UpstreamError},
+        upstream::{SessionId, Upstream, UpstreamError},
     };
 
     use super::*;
@@ -190,7 +190,11 @@ mod tests {
 
     #[async_trait::async_trait]
     impl Upstream for EchoUpstream {
-        async fn transact(&mut self, command: &Command) -> Result<Response, UpstreamError> {
+        async fn transact(
+            &mut self,
+            _session: SessionId,
+            command: &Command,
+        ) -> Result<Response, UpstreamError> {
             let mut response = Vec::from(0x8001u16.to_be_bytes());
             response.extend_from_slice(&14u32.to_be_bytes());
             response.extend_from_slice(&0u32.to_be_bytes());

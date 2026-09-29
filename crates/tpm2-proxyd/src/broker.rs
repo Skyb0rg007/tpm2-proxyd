@@ -5,9 +5,9 @@
 //! Authorized command submission pipeline.
 //!
 //! The broker is the only path from a downstream client to the command
-//! scheduler. It caps the connection priority once at admission, checks every
-//! parsed command against the current policy, and only then submits it to the
-//! serialized upstream worker.
+//! scheduler. It caps the connection priority and opens the client's upstream
+//! session once at admission, checks every parsed command against the current
+//! policy, and only then submits it to the serialized upstream worker.
 
 #![allow(dead_code)] // Main/config wiring is implemented in a later change.
 
@@ -18,7 +18,7 @@ use std::sync::{
 
 use crate::{
     policy::{Decision, Policy},
-    scheduler::{CommandScheduler, ExecuteError, Priority},
+    scheduler::{CommandScheduler, ExecuteError, Priority, Session},
     server::peer::Peer,
     tpm::{Command, Response},
 };
@@ -55,7 +55,8 @@ impl Broker {
         self.generation.load(Ordering::Relaxed)
     }
 
-    /// Admit a peer and cap its requested priority for the connection lifetime.
+    /// Admit a peer: cap its requested priority for the connection lifetime and
+    /// open its upstream session, which closes when the [`Client`] is dropped.
     pub fn admit(&self, peer: Peer, requested_priority: Priority) -> Client {
         let priority = self
             .policy
@@ -64,16 +65,18 @@ impl Broker {
             .cap_priority(&peer, requested_priority);
         Client {
             broker: self.clone(),
+            session: self.scheduler.open_session(),
             peer,
             priority,
         }
     }
 }
 
-/// Admitted client with a fixed, policy-bounded priority.
-#[derive(Clone)]
+/// Admitted client with a fixed, policy-bounded priority and its own upstream
+/// session.
 pub struct Client {
     broker: Broker,
+    session: Session,
     peer: Peer,
     priority: Priority,
 }
@@ -97,8 +100,7 @@ impl Client {
             return Err(BrokerError::Denied { command_code: code });
         }
 
-        self.broker
-            .scheduler
+        self.session
             .execute(self.priority, command)
             .await
             .map_err(Into::into)
@@ -129,7 +131,7 @@ mod tests {
     use crate::{
         policy::{CommandRule, PolicyConfig, PriorityRule, Subject},
         tpm::DEFAULT_MAX_PACKET_SIZE,
-        upstream::{Upstream, UpstreamError},
+        upstream::{SessionId, Upstream, UpstreamError},
     };
 
     use super::*;
@@ -141,7 +143,11 @@ mod tests {
 
     #[async_trait::async_trait]
     impl Upstream for CountingUpstream {
-        async fn transact(&mut self, command: &Command) -> Result<Response, UpstreamError> {
+        async fn transact(
+            &mut self,
+            _session: SessionId,
+            command: &Command,
+        ) -> Result<Response, UpstreamError> {
             self.count.fetch_add(1, Ordering::Relaxed);
             self.codes.lock().unwrap().push(command.code().value());
             let mut response = Vec::from(0x8001u16.to_be_bytes());

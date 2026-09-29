@@ -17,6 +17,9 @@
 //! the kernel resource manager, swtpm speaks plain sockets, so this upstream is
 //! fully async and needs no worker thread; the data connection is reconnected
 //! after any I/O error or timeout so a desynchronized stream is never reused.
+//!
+//! swtpm has no resource manager, so every client shares the one TPM: sessions
+//! are not isolated here, and transient objects are not flushed on disconnect.
 
 use std::path::PathBuf;
 use std::time::Duration;
@@ -26,7 +29,7 @@ use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt};
 use tokio::net::{TcpStream, UnixStream};
 
 use crate::tpm::{self, Command, HEADER_SIZE, Response};
-use crate::upstream::{Upstream, UpstreamError};
+use crate::upstream::{SessionId, Upstream, UpstreamError};
 
 /// swtpm control command: initialize the TPM (`CMD_INIT`).
 const CMD_INIT: u32 = 0x02;
@@ -127,7 +130,11 @@ impl SwtpmUpstream {
 
 #[async_trait]
 impl Upstream for SwtpmUpstream {
-    async fn transact(&mut self, command: &Command) -> Result<Response, UpstreamError> {
+    async fn transact(
+        &mut self,
+        _session: SessionId,
+        command: &Command,
+    ) -> Result<Response, UpstreamError> {
         if self.data.is_none() {
             let data = connect(&self.server)
                 .await
@@ -333,9 +340,15 @@ mod tests {
         .await
         .unwrap();
 
-        let reply = upstream.transact(&command(0x17b)).await.unwrap();
+        let reply = upstream
+            .transact(SessionId(0), &command(0x17b))
+            .await
+            .unwrap();
         assert_eq!(reply.as_bytes(), response(0x17b));
-        let reply = upstream.transact(&command(0x17a)).await.unwrap();
+        let reply = upstream
+            .transact(SessionId(0), &command(0x17a))
+            .await
+            .unwrap();
         assert_eq!(reply.as_bytes(), response(0x17a));
 
         let _ = std::fs::remove_file(&path);

@@ -206,8 +206,18 @@ granularity:
   hardware is still serial, so the scheduler is still required — but slices can
   be short without breaking client sessions.
 
-This mapping choice is owned by `upstream`/`scheduler` and is left open here; the
-scheduler interface is designed to support either.
+The daemon uses **per-client upstream fds**. At admission the broker opens a
+scheduler `Session` for the client, and every queued command carries its session
+id. `TpmDeviceUpstream` opens a separate `/dev/tpmrm0` handle for each session
+on that session's first command and closes it when the client disconnects. The
+kernel RM then flushes whatever the client left loaded, so abandoned objects
+never accumulate. (With one shared fd they did, and the kernel RM's per-fd limit
+of three transient objects was exhausted after a few ordinary `tpm2-tools`
+runs.) A command still queued when its client disconnects is dropped, not
+forwarded.
+
+The swtpm upstream, used for testing, has no resource manager and cannot isolate
+clients; there, every session shares the one TPM.
 
 ## Non-goals
 

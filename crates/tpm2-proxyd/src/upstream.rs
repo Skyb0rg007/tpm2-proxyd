@@ -5,13 +5,21 @@
 //! Serialized upstream TPM transport.
 //!
 //! The scheduler owns one [`Upstream`] and invokes it for exactly one command
-//! at a time. The concrete transport, [`TpmDeviceUpstream`], forwards commands
-//! to the Linux kernel resource manager (`/dev/tpmrm0`) through `tpm2-device`.
+//! at a time. Each command belongs to a [`SessionId`], one per downstream
+//! client, so an upstream can keep each client's TPM state isolated.
+//!
+//! The concrete transport, [`TpmDeviceUpstream`], forwards commands to the Linux
+//! kernel resource manager (`/dev/tpmrm0`) through `tpm2-device`, opening a
+//! separate device handle per session. The kernel resource manager gives every
+//! open handle its own space of transient objects and sessions, and flushes
+//! that space when the handle is closed, so one client can neither see nor
+//! exhaust another's resources, and nothing a client leaves loaded outlives
+//! its connection.
 //!
 //! `tpm2-device`'s [`TpmPosixDevice`] is a synchronous, `!Send` value whose
-//! receive call blocks until the TPM replies, so it is owned by a dedicated
-//! worker thread. The async [`Upstream`] handle is a cheap, `Send` channel into
-//! that thread.
+//! receive call blocks until the TPM replies, so every session's device is
+//! owned by one dedicated worker thread. The async [`Upstream`] handle is a
+//! cheap, `Send` channel into that thread.
 //!
 //! Commands are forwarded through the device's raw [`TpmTransport`] interface:
 //! the command frame is written unchanged and the TPM's response frame
@@ -22,13 +30,24 @@
 /// Upstream transport backed by a swtpm software TPM over sockets.
 pub mod swtpm;
 
-use std::{error::Error, path::Path, sync::mpsc, thread, time::Duration};
+use std::{
+    collections::{HashMap, hash_map::Entry},
+    error::Error,
+    path::Path,
+    sync::mpsc,
+    thread,
+    time::Duration,
+};
 
 use async_trait::async_trait;
 use tokio::sync::oneshot;
 use tpm2_device::{TpmDeviceError, TpmPosixDevice, TpmTransport};
 
 use crate::tpm::{Command, Response};
+
+/// Identifies one downstream client's upstream session.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub struct SessionId(pub u64);
 
 /// Error returned when an upstream transaction cannot produce a valid response.
 #[derive(Debug, thiserror::Error)]
@@ -47,83 +66,82 @@ pub enum UpstreamError {
 /// A TPM transport capable of one complete command/response transaction.
 #[async_trait]
 pub trait Upstream: Send + 'static {
-    /// Send `command` and wait for its response.
-    async fn transact(&mut self, command: &Command) -> Result<Response, UpstreamError>;
+    /// Send `command` on behalf of `session` and wait for its response.
+    ///
+    /// The first command of a session opens whatever upstream state the
+    /// session needs.
+    async fn transact(
+        &mut self,
+        session: SessionId,
+        command: &Command,
+    ) -> Result<Response, UpstreamError>;
+
+    /// Release `session`'s upstream state; its client has disconnected.
+    ///
+    /// The default does nothing, for upstreams that do not isolate sessions.
+    async fn close(&mut self, _session: SessionId) {}
 }
 
-/// Upstream transport backed by a `tpm2-device` [`TpmPosixDevice`] on a worker thread.
+/// Upstream transport backed by per-session `tpm2-device` [`TpmPosixDevice`]s
+/// on a worker thread.
 pub struct TpmDeviceUpstream {
     requests: mpsc::Sender<DeviceRequest>,
     max_response_size: usize,
 }
 
-struct DeviceRequest {
-    command: Vec<u8>,
-    reply: oneshot::Sender<Result<Vec<u8>, UpstreamError>>,
+enum DeviceRequest {
+    Transact {
+        session: SessionId,
+        command: Vec<u8>,
+        reply: oneshot::Sender<Result<Vec<u8>, UpstreamError>>,
+    },
+    Close(SessionId),
 }
 
 impl TpmDeviceUpstream {
-    /// Open `path` (such as `/dev/tpmrm0`) and start the upstream worker thread.
+    /// Check that `path` (such as `/dev/tpmrm0`) can be opened and start the
+    /// upstream worker thread.
     ///
     /// `command_timeout` is the hard per-command time limit: `tpm2-device`
     /// abandons a transaction whose response does not arrive within it, which
     /// frees the worker (and the clients queued behind it) from a wedged TPM.
     ///
-    /// The TPM device is opened on the worker thread itself, since
-    /// [`TpmPosixDevice`] cannot cross threads. This call blocks until the
-    /// device is open, so a failure to open it is reported synchronously.
+    /// Session devices are opened lazily on the worker thread, since
+    /// [`TpmPosixDevice`] cannot cross threads. The device is also opened once
+    /// here, so a missing device or a permission problem is reported at startup
+    /// rather than on the first client's command.
     pub fn open(
         path: impl AsRef<Path>,
         max_response_size: usize,
         command_timeout: Duration,
     ) -> Result<Self, TpmDeviceError> {
         let path = path.as_ref().to_path_buf();
-        let (requests, incoming) = mpsc::channel::<DeviceRequest>();
-        let (ready_tx, ready_rx) = mpsc::channel::<Result<(), TpmDeviceError>>();
+        drop(open_device(&path, command_timeout)?);
 
+        let (requests, incoming) = mpsc::channel::<DeviceRequest>();
         thread::Builder::new()
             .name("tpm-device".to_owned())
-            .spawn(move || {
-                let mut device = match TpmPosixDevice::builder()
-                    .with_path(&path)
-                    .with_timeout(command_timeout)
-                    .build()
-                {
-                    Ok(device) => {
-                        let _ = ready_tx.send(Ok(()));
-                        device
-                    }
-                    Err(error) => {
-                        let _ = ready_tx.send(Err(error));
-                        return;
-                    }
-                };
-                drop(ready_tx);
-
-                while let Ok(request) = incoming.recv() {
-                    let result = forward(&mut device, &request.command);
-                    let _ = request.reply.send(result);
-                }
-            })
+            .spawn(move || run_device_worker(&path, command_timeout, &incoming))
             .map_err(TpmDeviceError::Io)?;
 
-        match ready_rx.recv() {
-            Ok(Ok(())) => Ok(Self {
-                requests,
-                max_response_size,
-            }),
-            Ok(Err(error)) => Err(error),
-            Err(_) => Err(TpmDeviceError::NotAvailable),
-        }
+        Ok(Self {
+            requests,
+            max_response_size,
+        })
     }
 }
 
 #[async_trait]
 impl Upstream for TpmDeviceUpstream {
-    async fn transact(&mut self, command: &Command) -> Result<Response, UpstreamError> {
+    async fn transact(
+        &mut self,
+        session: SessionId,
+        command: &Command,
+    ) -> Result<Response, UpstreamError> {
         let (reply, response) = oneshot::channel();
         self.requests
-            .send(DeviceRequest {
+            .send(DeviceRequest::Transact {
+                session,
                 command: command.as_bytes().to_vec(),
                 reply,
             })
@@ -131,6 +149,55 @@ impl Upstream for TpmDeviceUpstream {
 
         let bytes = response.await.map_err(|_| UpstreamError::WorkerStopped)??;
         Response::parse(bytes, self.max_response_size).map_err(Into::into)
+    }
+
+    async fn close(&mut self, session: SessionId) {
+        let _ = self.requests.send(DeviceRequest::Close(session));
+    }
+}
+
+fn open_device(path: &Path, timeout: Duration) -> Result<TpmPosixDevice, TpmDeviceError> {
+    TpmPosixDevice::builder()
+        .with_path(path)
+        .with_timeout(timeout)
+        .build()
+}
+
+/// Serve device requests until every [`TpmDeviceUpstream`] handle is dropped.
+fn run_device_worker(path: &Path, timeout: Duration, incoming: &mpsc::Receiver<DeviceRequest>) {
+    let mut devices = HashMap::new();
+
+    while let Ok(request) = incoming.recv() {
+        match request {
+            DeviceRequest::Transact {
+                session,
+                command,
+                reply,
+            } => {
+                let device = match devices.entry(session) {
+                    Entry::Occupied(entry) => entry.into_mut(),
+                    Entry::Vacant(entry) => match open_device(path, timeout) {
+                        Ok(device) => entry.insert(device),
+                        Err(error) => {
+                            let _ = reply.send(Err(UpstreamError::Transport(Box::new(error))));
+                            continue;
+                        }
+                    },
+                };
+                let result = forward(device, &command);
+                // After a failed transaction (such as a timeout) a late response
+                // could still arrive on this handle and be mistaken for the next
+                // command's, so close it. The client's connection ends with the
+                // error anyway.
+                if result.is_err() {
+                    devices.remove(&session);
+                }
+                let _ = reply.send(result);
+            }
+            // Dropping the device closes its handle, and the kernel resource
+            // manager flushes everything the session left loaded.
+            DeviceRequest::Close(session) => drop(devices.remove(&session)),
+        }
     }
 }
 

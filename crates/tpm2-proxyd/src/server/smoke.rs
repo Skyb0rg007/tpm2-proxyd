@@ -25,7 +25,7 @@ use crate::server::connection::serve_listener;
 use crate::server::registry::ConnectionRegistry;
 use crate::server::unix::RawTpmListener;
 use crate::tpm::{Command, DEFAULT_MAX_PACKET_SIZE, HEADER_SIZE, Response};
-use crate::upstream::{Upstream, UpstreamError};
+use crate::upstream::{SessionId, Upstream, UpstreamError};
 
 const GET_RANDOM: u32 = 0x17b;
 const GET_TEST_RESULT: u32 = 0x17c;
@@ -38,7 +38,11 @@ struct FakeTpm;
 
 #[async_trait::async_trait]
 impl Upstream for FakeTpm {
-    async fn transact(&mut self, command: &Command) -> Result<Response, UpstreamError> {
+    async fn transact(
+        &mut self,
+        _session: SessionId,
+        command: &Command,
+    ) -> Result<Response, UpstreamError> {
         let bytes = if command.code().value() == GET_TEST_RESULT {
             error_response(TPM_RC_FAILURE)
         } else {

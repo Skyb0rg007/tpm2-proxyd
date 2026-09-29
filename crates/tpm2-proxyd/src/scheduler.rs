@@ -9,14 +9,20 @@
 //! already-authorized commands with a fixed priority. A single worker owns the
 //! upstream transport, drains pending commands in priority order, and completes
 //! exactly one TPM transaction at a time.
+//!
+//! Each client submits through its own [`Session`], which tags its commands so
+//! the upstream can keep per-client TPM state apart. Dropping the session tells
+//! the upstream to release that state.
 
 use std::cmp::Ordering;
 use std::collections::BinaryHeap;
+use std::sync::Arc;
+use std::sync::atomic::{self, AtomicU64};
 
 use tokio::sync::{mpsc, oneshot};
 
 use crate::tpm::{Command, Response};
-use crate::upstream::{Upstream, UpstreamError};
+use crate::upstream::{SessionId, Upstream, UpstreamError};
 
 /// Scheduling priority for a client command.
 ///
@@ -32,10 +38,13 @@ impl Priority {
     pub const MAX: Self = Self(i32::MAX);
 }
 
-/// Handle used by client tasks to submit commands to the TPM worker.
+/// Handle to the TPM worker, used to open client sessions.
 #[derive(Clone)]
 pub struct CommandScheduler {
-    sender: mpsc::Sender<QueuedCommand>,
+    commands: mpsc::Sender<QueuedCommand>,
+    // Unbounded so that a session can always report its closure from `Drop`.
+    closed: mpsc::UnboundedSender<SessionId>,
+    next_session: Arc<AtomicU64>,
 }
 
 impl CommandScheduler {
@@ -48,11 +57,32 @@ impl CommandScheduler {
         U: Upstream,
     {
         assert!(queue_capacity > 0, "queue capacity must be non-zero");
-        let (sender, receiver) = mpsc::channel(queue_capacity);
-        tokio::spawn(run_command_worker(upstream, receiver));
-        Self { sender }
+        let (commands, receiver) = mpsc::channel(queue_capacity);
+        let (closed, closed_receiver) = mpsc::unbounded_channel();
+        tokio::spawn(run_command_worker(upstream, receiver, closed_receiver));
+        Self {
+            commands,
+            closed,
+            next_session: Arc::new(AtomicU64::new(0)),
+        }
     }
 
+    /// Open a new upstream session for one client.
+    pub fn open_session(&self) -> Session {
+        Session {
+            id: SessionId(self.next_session.fetch_add(1, atomic::Ordering::Relaxed)),
+            scheduler: self.clone(),
+        }
+    }
+}
+
+/// One client's upstream session; its upstream state is released on drop.
+pub struct Session {
+    id: SessionId,
+    scheduler: CommandScheduler,
+}
+
+impl Session {
     /// Queue one command and wait until the upstream TCTI returns its response.
     pub async fn execute(
         &self,
@@ -60,10 +90,12 @@ impl CommandScheduler {
         command: Command,
     ) -> Result<Response, ExecuteError> {
         let (reply, response) = oneshot::channel();
-        self.sender
+        self.scheduler
+            .commands
             .send(QueuedCommand {
                 priority,
                 sequence: 0,
+                session: self.id,
                 command,
                 reply,
             })
@@ -74,6 +106,12 @@ impl CommandScheduler {
             .await
             .map_err(|_| ExecuteError::SchedulerStopped)?
             .map_err(ExecuteError::Upstream)
+    }
+}
+
+impl Drop for Session {
+    fn drop(&mut self) {
+        let _ = self.scheduler.closed.send(self.id);
     }
 }
 
@@ -91,6 +129,7 @@ pub enum ExecuteError {
 struct QueuedCommand {
     priority: Priority,
     sequence: u64,
+    session: SessionId,
     command: Command,
     reply: oneshot::Sender<Result<Response, UpstreamError>>,
 }
@@ -119,19 +158,32 @@ impl Ord for QueuedCommand {
     }
 }
 
-async fn run_command_worker<U>(mut upstream: U, mut receiver: mpsc::Receiver<QueuedCommand>)
-where
+async fn run_command_worker<U>(
+    mut upstream: U,
+    mut receiver: mpsc::Receiver<QueuedCommand>,
+    mut closed: mpsc::UnboundedReceiver<SessionId>,
+) where
     U: Upstream,
 {
     let mut queue = BinaryHeap::new();
     let mut next_sequence = 0u64;
 
     loop {
+        // Release disconnected clients' upstream state before the next
+        // transaction.
+        while let Ok(session) = closed.try_recv() {
+            upstream.close(session).await;
+        }
+
         if queue.is_empty() {
-            let Some(command) = receiver.recv().await else {
-                break;
-            };
-            push_command(&mut queue, command, &mut next_sequence);
+            tokio::select! {
+                Some(session) = closed.recv() => upstream.close(session).await,
+                command = receiver.recv() => match command {
+                    Some(command) => push_command(&mut queue, command, &mut next_sequence),
+                    None => break,
+                },
+            }
+            continue;
         }
 
         // Collect every command currently waiting before choosing the next one.
@@ -141,7 +193,12 @@ where
         }
 
         let command = queue.pop().expect("queue is non-empty");
-        let result = upstream.transact(&command.command).await;
+        // Nobody is waiting for this command's response: its client went away
+        // while it was queued, and its session may already be closed.
+        if command.reply.is_closed() {
+            continue;
+        }
+        let result = upstream.transact(command.session, &command.command).await;
         let _ = command.reply.send(result);
     }
 }
@@ -179,60 +236,109 @@ mod tests {
         Response::parse(bytes, 4096).unwrap()
     }
 
+    #[derive(Debug, PartialEq)]
+    enum Event {
+        Transact(SessionId, u32),
+        Close(SessionId),
+    }
+
+    /// Records every upstream call and holds the first transaction until
+    /// `release_first` gets a permit, so tests can queue commands behind it.
     struct RecordingUpstream {
-        calls: Arc<Mutex<Vec<u32>>>,
+        events: Arc<Mutex<Vec<Event>>>,
         first_started: Option<oneshot::Sender<()>>,
         release_first: Arc<tokio::sync::Semaphore>,
     }
 
+    /// A scheduler over a [`RecordingUpstream`], plus the handles to observe
+    /// and release it.
+    struct Harness {
+        scheduler: CommandScheduler,
+        events: Arc<Mutex<Vec<Event>>>,
+        first_started: oneshot::Receiver<()>,
+        release_first: Arc<tokio::sync::Semaphore>,
+    }
+
+    impl Harness {
+        fn start() -> Self {
+            let events = Arc::new(Mutex::new(Vec::new()));
+            let release_first = Arc::new(tokio::sync::Semaphore::new(0));
+            let (started, first_started) = oneshot::channel();
+            let scheduler = CommandScheduler::start(
+                RecordingUpstream {
+                    events: events.clone(),
+                    first_started: Some(started),
+                    release_first: release_first.clone(),
+                },
+                8,
+            );
+            Self {
+                scheduler,
+                events,
+                first_started,
+                release_first,
+            }
+        }
+    }
+
     #[async_trait::async_trait]
     impl Upstream for RecordingUpstream {
-        async fn transact(&mut self, command: &Command) -> Result<Response, UpstreamError> {
-            let is_first = self.calls.lock().unwrap().is_empty();
-            self.calls.lock().unwrap().push(command.code().value());
-            if is_first {
-                if let Some(started) = self.first_started.take() {
-                    let _ = started.send(());
-                }
+        async fn transact(
+            &mut self,
+            session: SessionId,
+            command: &Command,
+        ) -> Result<Response, UpstreamError> {
+            self.events
+                .lock()
+                .unwrap()
+                .push(Event::Transact(session, command.code().value()));
+            if let Some(started) = self.first_started.take() {
+                let _ = started.send(());
                 self.release_first.acquire().await.unwrap().forget();
             }
             Ok(success_response(command.code().value()))
+        }
+
+        async fn close(&mut self, session: SessionId) {
+            self.events.lock().unwrap().push(Event::Close(session));
+        }
+    }
+
+    /// Give spawned submissions time to reach the worker's queue.
+    async fn let_submissions_queue() {
+        for _ in 0..4 {
+            tokio::task::yield_now().await;
         }
     }
 
     #[tokio::test]
     async fn command_scheduler_serializes_and_prioritizes_waiters() {
-        let calls = Arc::new(Mutex::new(Vec::new()));
-        let release_first = Arc::new(tokio::sync::Semaphore::new(0));
-        let (first_started, started) = oneshot::channel();
-        let scheduler = CommandScheduler::start(
-            RecordingUpstream {
-                calls: calls.clone(),
-                first_started: Some(first_started),
-                release_first: release_first.clone(),
-            },
-            8,
-        );
+        let Harness {
+            scheduler,
+            events,
+            first_started: started,
+            release_first,
+        } = Harness::start();
 
-        let first_scheduler = scheduler.clone();
+        let first_session = scheduler.open_session();
         let first = tokio::spawn(async move {
-            first_scheduler
+            first_session
                 .execute(Priority(0), raw_command(0x17b))
                 .await
                 .unwrap()
         });
         started.await.unwrap();
 
-        let low_scheduler = scheduler.clone();
+        let low_session = scheduler.open_session();
         let low = tokio::spawn(async move {
-            low_scheduler
+            low_session
                 .execute(Priority(1), raw_command(0x17a))
                 .await
                 .unwrap()
         });
-        let high_scheduler = scheduler.clone();
+        let high_session = scheduler.open_session();
         let high = tokio::spawn(async move {
-            high_scheduler
+            high_session
                 .execute(Priority(10), raw_command(0x17c))
                 .await
                 .unwrap()
@@ -240,9 +346,7 @@ mod tests {
 
         // Let both submissions reach the worker while the first transaction is
         // non-preemptibly blocked upstream.
-        for _ in 0..4 {
-            tokio::task::yield_now().await;
-        }
+        let_submissions_queue().await;
         release_first.add_permits(1);
 
         assert_eq!(
@@ -257,6 +361,65 @@ mod tests {
             low.await.unwrap().as_bytes(),
             success_response(0x17a).as_bytes()
         );
-        assert_eq!(*calls.lock().unwrap(), [0x17b, 0x17c, 0x17a]);
+        let transacted: Vec<u32> = events
+            .lock()
+            .unwrap()
+            .iter()
+            .filter_map(|event| match event {
+                Event::Transact(_, code) => Some(*code),
+                Event::Close(_) => None,
+            })
+            .collect();
+        assert_eq!(transacted, [0x17b, 0x17c, 0x17a]);
+    }
+
+    #[tokio::test]
+    async fn disconnected_session_is_closed_and_never_transacted_again() {
+        let Harness {
+            scheduler,
+            events,
+            first_started: started,
+            release_first,
+        } = Harness::start();
+        let first_session = scheduler.open_session();
+        let gone_session = scheduler.open_session();
+        let later_session = scheduler.open_session();
+        let (first_id, gone_id, later_id) = (first_session.id, gone_session.id, later_session.id);
+
+        let first = tokio::spawn(async move {
+            first_session
+                .execute(Priority(0), raw_command(0x17b))
+                .await
+                .unwrap()
+        });
+        started.await.unwrap();
+
+        // Queue a command behind the blocked transaction, then disconnect its
+        // client before the worker reaches it.
+        let gone =
+            tokio::spawn(
+                async move { gone_session.execute(Priority(10), raw_command(0x17a)).await },
+            );
+        let_submissions_queue().await;
+        gone.abort();
+        assert!(gone.await.unwrap_err().is_cancelled());
+
+        release_first.add_permits(1);
+        first.await.unwrap();
+        // A later, lower-priority command completing proves the worker has
+        // moved past the disconnected client's queued command.
+        later_session
+            .execute(Priority(0), raw_command(0x17c))
+            .await
+            .unwrap();
+
+        let events = events.lock().unwrap();
+        assert!(events.contains(&Event::Transact(first_id, 0x17b)));
+        assert!(events.contains(&Event::Transact(later_id, 0x17c)));
+        let gone_events: Vec<_> = events
+            .iter()
+            .filter(|event| matches!(event, Event::Transact(id, _) | Event::Close(id) if *id == gone_id))
+            .collect();
+        assert_eq!(gone_events, [&Event::Close(gone_id)]);
     }
 }

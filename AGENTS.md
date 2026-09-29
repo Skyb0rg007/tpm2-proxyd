@@ -55,8 +55,8 @@ daemon) with crates under `crates/`:
 Request flow (also drawn in `main.rs`'s module docs):
 `server` (accept, `SO_PEERCRED` peer identity, connection registry) →
 `broker` (caps priority at admission, authorizes each command against `policy`)
-→ `scheduler` (single worker, priority-ordered, one TPM transaction at a time)
-→ `upstream` (the TPM).
+→ `scheduler` (single worker, priority-ordered, one TPM transaction at a time,
+per-client sessions) → `upstream` (the TPM).
 
 - Two Unix sockets: the raw TPM socket (default
   `/run/tpm2-proxyd/tpm2-proxyd.sock`) and a Varlink control socket
@@ -72,8 +72,14 @@ Request flow (also drawn in `main.rs`'s module docs):
   `TpmTransport` interface (`send`/`recv`): command bytes go out unchanged and
   the TPM's response bytes, error responses included, come back unchanged.
   Keep using `tpm2-device` for this rather than a hand-rolled `File`
-  transport. `TpmPosixDevice` is `!Send` and blocks, so it lives on a dedicated
-  worker thread behind a `Send` channel handle.
+  transport. `TpmPosixDevice` is `!Send` and blocks, so all of them live on one
+  dedicated worker thread behind a `Send` channel handle.
+- Each client gets its own `/dev/tpmrm0` handle: `Broker::admit` opens a
+  scheduler `Session`, commands carry its `SessionId`, and dropping the session
+  (on disconnect) closes the handle, so the kernel RM isolates clients and
+  flushes whatever they leave loaded. Don't go back to one shared fd: abandoned
+  objects pile up and exhaust the kernel RM's 3-objects-per-fd limit. The swtpm
+  upstream can't isolate sessions and ignores them.
 - The zlink Varlink server future is not `Send`, so `varlink::run` runs on the
   main task via `tokio::select!` rather than `tokio::spawn` (spawning it trips
   rust-lang/rust#100013).
