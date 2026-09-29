@@ -1,0 +1,347 @@
+# SPDX-FileCopyrightText: 2026 Skye Soss <skye@soss.website>
+#
+# SPDX-License-Identifier: Apache-2.0
+#
+# Example future policy-language configuration. The current daemon still parses
+# dist/policy.example.json; this file demonstrates the declarative policy model
+# described in docs/policy-language.md.
+
+version: 1
+
+defaults:
+  decision: deny
+  priority: 0
+  unknown_resources: deny
+  audit: deny
+
+subjects:
+  admins:
+    any:
+      - uid: 0
+      - group: tpm-admins
+
+  users:
+    group: tpm-users
+
+namespaces:
+  persistent:
+    user_keys:
+      range: "0x81010000..0x8101ffff"
+      owner: peer_uid
+
+  nv:
+    user_nv:
+      range: "0x01810000..0x0181ffff"
+      owner: peer_uid
+
+  pcr:
+    measured_boot_read:
+      banks: [sha256]
+      indexes: [0, 1, 2, 3, 4, 5, 6, 7, 11]
+
+limits:
+  users:
+    max_priority: 1
+    command_timeout: 30s
+    max_command_size: 4096
+    max_connections: 2
+    max_transient_objects: 8
+    max_sessions: 4
+    rate:
+      window: 1m
+      commands: 120
+
+  admins:
+    max_priority: 10
+    command_timeout: 120s
+    max_command_size: 65536
+    max_connections: 8
+
+rules:
+  - id: admins-may-use-recognized-commands
+    decision: allow
+    subject: admins
+    commands: ["*"]
+    priority: 10
+    limits: admins
+    audit: all
+
+  - id: users-read-basic-capabilities
+    decision: allow
+    subject: users
+    commands:
+      - GetCapability
+      - ReadClock
+      - GetTestResult
+      - ECC_Parameters
+    priority: 1
+    limits: users
+    where:
+      all:
+        - capability.in:
+            - algorithms
+            - commands
+            - pcrs
+            - tpm_properties
+            - ecc_curves
+    audit: allow
+
+  - id: users-get-limited-random
+    decision: allow
+    subject: users
+    commands: [GetRandom]
+    priority: 1
+    limits: users
+    where:
+      all:
+        - bytes_requested.max: 64
+    audit: allow
+
+  - id: users-read-measured-boot-pcrs
+    decision: allow
+    subject: users
+    commands: [PCR_Read]
+    priority: 1
+    limits: users
+    where:
+      all:
+        - pcr_selection.in_namespace: pcr.measured_boot_read
+    audit: allow
+
+  - id: users-create-limited-signing-keys
+    decision: allow
+    subject: users
+    commands:
+      - Create
+      - CreateLoaded
+      - Load
+    priority: 1
+    limits: users
+    where:
+      all:
+        - parent.owned_by: peer
+        - template.type: ecc
+        - template.ecc_curve.in: [nist_p256]
+        - template.name_alg.in: [sha256]
+        - template.attributes.require:
+            - fixedTPM
+            - fixedParent
+            - sensitiveDataOrigin
+            - sign
+        - template.attributes.forbid:
+            - decrypt
+            - restricted
+    audit: allow
+
+  - id: users-load-public-verification-objects
+    decision: allow
+    subject: users
+    commands: [LoadExternal]
+    priority: 1
+    limits: users
+    where:
+      all:
+        - load_external.private_allowed: false
+        - template.type: ecc
+        - template.ecc_curve.in: [nist_p256, nist_p384]
+        - template.name_alg.in: [sha256, sha384]
+    audit: allow
+
+  - id: users-use-own-objects-for-signing-and-attestation
+    decision: allow
+    subject: users
+    commands:
+      - Sign
+      - VerifySignature
+      - Quote
+      - Certify
+      - CertifyCreation
+      - ReadPublic
+    priority: 1
+    limits: users
+    where:
+      all:
+        - object.tracked: true
+        - object.owned_by: peer
+        - sessions.all_owned_by: peer
+    audit: allow
+
+  - id: users-flush-only-own-transient-resources
+    decision: allow
+    subject: users
+    commands: [FlushContext]
+    priority: 1
+    limits: users
+    where:
+      all:
+        - target.tracked: true
+        - target.owned_by: peer
+        - target.kind.in: [transient, session, sequence]
+    audit: allow
+
+  - id: users-persist-own-keys-in-user-range
+    decision: allow
+    subject: users
+    commands: [EvictControl]
+    priority: 1
+    limits: users
+    where:
+      all:
+        - evict.operation: persist
+        - object.tracked: true
+        - object.owned_by: peer
+        - persistent.in_namespace: persistent.user_keys
+        - persistent.empty: true
+    audit: all
+
+  - id: users-evict-own-persistent-keys
+    decision: allow
+    subject: users
+    commands: [EvictControl]
+    priority: 1
+    limits: users
+    where:
+      all:
+        - evict.operation: evict
+        - persistent.tracked: true
+        - persistent.owned_by: peer
+        - persistent.in_namespace: persistent.user_keys
+    audit: all
+
+  - id: users-define-small-user-nv-indexes
+    decision: allow
+    subject: users
+    commands:
+      - NV_DefineSpace
+      - NV_DefineSpace2
+    priority: 1
+    limits: users
+    where:
+      all:
+        - nv_index.in_namespace: nv.user_nv
+        - nv_index.empty: true
+        - nv_index.size.max: 1024
+        - nv_index.attributes.require:
+            - authread
+            - authwrite
+        - nv_index.attributes.forbid:
+            - platformcreate
+            - policydelete
+            - ppwrite
+            - ppread
+    audit: all
+
+  - id: users-read-own-or-public-nv
+    decision: allow
+    subject: users
+    commands:
+      - NV_Read
+      - NV_ReadPublic
+      - NV_ReadPublic2
+    priority: 1
+    limits: users
+    where:
+      any:
+        - nv_index.owned_by: peer
+        - nv_index.public_read: true
+    audit: allow
+
+  - id: users-write-own-nv
+    decision: allow
+    subject: users
+    commands:
+      - NV_Write
+      - NV_WriteLock
+      - NV_ReadLock
+      - NV_Increment
+      - NV_SetBits
+      - NV_Extend
+      - NV_ChangeAuth
+    priority: 1
+    limits: users
+    where:
+      all:
+        - nv_index.tracked: true
+        - nv_index.owned_by: peer
+        - nv_index.in_namespace: nv.user_nv
+    audit: all
+
+  - id: users-undefine-own-nv
+    decision: allow
+    subject: users
+    commands: [NV_UndefineSpace]
+    priority: 1
+    limits: users
+    where:
+      all:
+        - nv_index.tracked: true
+        - nv_index.owned_by: peer
+        - nv_index.in_namespace: nv.user_nv
+    audit: all
+
+  - id: users-start-and-use-own-policy-sessions
+    decision: allow
+    subject: users
+    commands:
+      - StartAuthSession
+      - PolicyAuthValue
+      - PolicyCommandCode
+      - PolicyCpHash
+      - PolicyGetDigest
+      - PolicyLocality
+      - PolicyNameHash
+      - PolicyOr
+      - PolicyPCR
+      - PolicyRestart
+      - PolicyTemplate
+    priority: 1
+    limits: users
+    where:
+      all:
+        - sessions.all_owned_by: peer
+    audit: allow
+
+  - id: deny-users-platform-and-firmware-control
+    decision: deny
+    subject: users
+    commands:
+      - Clear
+      - ClearControl
+      - HierarchyControl
+      - HierarchyChangeAuth
+      - ChangeEPS
+      - ChangePPS
+      - DictionaryAttackLockReset
+      - DictionaryAttackParameters
+      - SetPrimaryPolicy
+      - PCR_Allocate
+      - PCR_Reset
+      - PCR_SetAuthPolicy
+      - PCR_SetAuthValue
+      - FieldUpgradeStart
+      - FieldUpgradeData
+      - FirmwareRead
+      - SetCommandCodeAuditStatus
+      - SetAlgorithmSet
+      - Shutdown
+      - Startup
+      - Vendor_TCG_Test
+    audit: deny
+
+  - id: deny-users-untracked-destructive-resources
+    decision: deny
+    subject: users
+    commands:
+      - FlushContext
+      - EvictControl
+      - NV_UndefineSpace
+      - NV_UndefineSpaceSpecial
+      - ObjectChangeAuth
+      - NV_ChangeAuth
+    where:
+      any:
+        - target.tracked: false
+        - object.tracked: false
+        - persistent.tracked: false
+        - nv_index.tracked: false
+    audit: deny
