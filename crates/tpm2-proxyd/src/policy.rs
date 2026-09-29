@@ -66,7 +66,9 @@ impl Default for CommandRule {
     }
 }
 
-mod command_codes {
+/// Serde adapter for command code lists: numeric codes on the wire, rejecting
+/// any code `tpm2-protocol` does not recognize.
+pub(crate) mod command_codes {
     use serde::{Deserialize, Deserializer, Serialize, Serializer};
     use tpm2_protocol::data::TpmCc;
 

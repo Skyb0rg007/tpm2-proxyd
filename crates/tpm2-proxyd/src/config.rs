@@ -13,7 +13,9 @@ use std::{fs, io, path::Path};
 use serde::{Deserialize, Serialize};
 use tpm2_protocol::data::TpmCc;
 
-use crate::policy::{CommandRule, Decision, Policy, PolicyConfig, PriorityRule, Subject};
+use crate::policy::{
+    CommandRule, Decision, Policy, PolicyConfig, PriorityRule, Subject, command_codes,
+};
 
 /// Test configuration loaded from `--config=<path>`.
 #[derive(Clone, Debug, Default, PartialEq, Eq, Deserialize, Serialize)]
@@ -32,7 +34,11 @@ pub struct UserRule {
     /// Unix UID matched against connecting peers.
     pub uid: u32,
     /// TPM command codes this UID may execute; empty means every command.
-    pub commands: Vec<u32>,
+    ///
+    /// An unrecognized code fails the load rather than being dropped, since a
+    /// rule left with no codes would allow every command.
+    #[serde(with = "command_codes")]
+    pub commands: Vec<TpmCc>,
     /// Highest connection priority this UID may receive.
     pub priority: i32,
 }
@@ -44,7 +50,11 @@ pub struct GroupRule {
     /// Unix GID matched against primary and supplementary peer groups.
     pub gid: u32,
     /// TPM command codes this group may execute; empty means every command.
-    pub commands: Vec<u32>,
+    ///
+    /// An unrecognized code fails the load rather than being dropped, since a
+    /// rule left with no codes would allow every command.
+    #[serde(with = "command_codes")]
+    pub commands: Vec<TpmCc>,
     /// Highest connection priority this group may receive.
     pub priority: i32,
 }
@@ -97,12 +107,7 @@ impl Config {
             };
             command_rules.push(CommandRule {
                 subject: subject.clone(),
-                commands: rule
-                    .commands
-                    .iter()
-                    .copied()
-                    .filter_map(|command| TpmCc::try_from(command).ok())
-                    .collect(),
+                commands: rule.commands.clone(),
                 decision: Decision::Allow,
             });
             priority_rules.push(PriorityRule {
@@ -118,12 +123,7 @@ impl Config {
             };
             command_rules.push(CommandRule {
                 subject: subject.clone(),
-                commands: rule
-                    .commands
-                    .iter()
-                    .copied()
-                    .filter_map(|command| TpmCc::try_from(command).ok())
-                    .collect(),
+                commands: rule.commands.clone(),
                 decision: Decision::Allow,
             });
             priority_rules.push(PriorityRule {
@@ -177,7 +177,7 @@ mod tests {
         .unwrap();
 
         assert_eq!(config.users[0].uid, 1000);
-        assert_eq!(config.users[0].commands, [0x17b]);
+        assert_eq!(config.users[0].commands, [TpmCc::GetRandom]);
         assert_eq!(config.groups[0].gid, 42);
         assert_eq!(config.groups[0].priority, 3);
     }
@@ -187,7 +187,7 @@ mod tests {
         let policy = Config {
             users: vec![UserRule {
                 uid: 1000,
-                commands: vec![0x17b],
+                commands: vec![TpmCc::GetRandom],
                 priority: 7,
             }],
             groups: Vec::new(),
@@ -214,7 +214,7 @@ mod tests {
             users: Vec::new(),
             groups: vec![GroupRule {
                 gid: 42,
-                commands: vec![0x17a],
+                commands: vec![TpmCc::GetCapability],
                 priority: 4,
             }],
         }
@@ -229,6 +229,24 @@ mod tests {
         assert_eq!(policy.authorize(&peer, &command(0x17a)), Decision::Allow);
         assert_eq!(policy.authorize(&peer, &command(0x17b)), Decision::Deny);
         assert_eq!(policy.cap_priority(&peer, Priority(100)), Priority(4));
+    }
+
+    #[test]
+    fn rejects_unrecognized_command_codes() {
+        // 0x197 (TPM2_CertifyX509) is a real command tpm2-protocol lacks.
+        // Dropping it would leave an empty, allow-everything command list.
+        let err = serde_json::from_str::<Config>(
+            r#"{
+                "users": [{
+                    "uid": 1000,
+                    "commands": [407],
+                    "priority": 7
+                }]
+            }"#,
+        )
+        .unwrap_err();
+
+        assert!(err.is_data(), "{err}");
     }
 
     #[test]
