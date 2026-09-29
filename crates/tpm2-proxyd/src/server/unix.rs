@@ -140,8 +140,17 @@ where
     type Stream = UnixStream;
 
     async fn accept(&mut self) -> io::Result<Accepted<Self::Stream>> {
-        let (stream, _) = self.inner.accept().await?;
-        accept_stream(&self.resolver, stream)
+        loop {
+            let (stream, _) = self.inner.accept().await?;
+            match accept_stream(&self.resolver, stream) {
+                Ok(accepted) => return Ok(accepted),
+                // One client's credentials are unreadable: drop that client
+                // rather than report a listener error.
+                Err(error) => {
+                    tracing::warn!(%error, "failed to read a client's credentials; dropping it");
+                }
+            }
+        }
     }
 }
 
@@ -238,6 +247,43 @@ mod tests {
         let client = broker.admit(accepted.peer, accepted.requested_priority);
 
         assert_eq!(client.priority(), Priority(6));
+    }
+
+    /// Fails to resolve the first peer only.
+    struct FailFirstResolver(std::sync::atomic::AtomicBool);
+
+    impl PeerResolver for FailFirstResolver {
+        fn peer(&self, _stream: &UnixStream) -> io::Result<Peer> {
+            if self.0.swap(false, std::sync::atomic::Ordering::SeqCst) {
+                Err(io::Error::other("credentials unavailable"))
+            } else {
+                Ok(Peer::new(1000, 100))
+            }
+        }
+    }
+
+    #[tokio::test]
+    async fn unreadable_credentials_drop_only_that_client() {
+        use tokio::io::AsyncReadExt;
+
+        let dir = temp_path("unreadable-credentials");
+        fs::create_dir_all(&dir).unwrap();
+        let _cleanup = Cleanup(dir.clone());
+        let path = dir.join("proxy.sock");
+        let mut listener = RawTpmListener::from_listener_with_resolver(
+            UnixListener::bind(&path).unwrap(),
+            FailFirstResolver(true.into()),
+        );
+        let mut first = UnixStream::connect(&path).await.unwrap();
+        let _second = UnixStream::connect(&path).await.unwrap();
+
+        // The listener skips the first client and admits the second.
+        let accepted = listener.accept().await.expect("listener kept accepting");
+        assert_eq!(accepted.peer, Peer::new(1000, 100));
+
+        // The first client was dropped.
+        let mut byte = [0u8; 1];
+        assert_eq!(first.read(&mut byte).await.unwrap(), 0);
     }
 
     #[test]
