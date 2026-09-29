@@ -17,9 +17,11 @@
 //! (e.g. `--tcti=proxy:/run/tpm2-proxyd/tpm2-proxyd.sock`), defaulting to
 //! [`DEFAULT_SOCKET_PATH`].
 //!
-//! Wire protocol (must stay in sync with the daemon): each command is written
-//! verbatim and each response is read back verbatim. TPM commands and responses
-//! are self-framing — the 10-byte header carries the total size at bytes 2..6.
+//! Wire protocol (must stay in sync with the daemon's `server::hello` and
+//! `server::connection`): `init` sends a hello and checks the daemon's reply
+//! (see [`hello`]). After that, each command is written verbatim and each
+//! response is read back verbatim. TPM commands and responses are self-framing:
+//! the 10-byte header carries the total size at bytes 2..6.
 
 use std::ffi::{CStr, c_char, c_int, c_short, c_void};
 use std::io::{Read, Write};
@@ -115,6 +117,7 @@ pub mod abi {
     pub const TSS2_TCTI_RC_IO_ERROR: Tss2Rc = TCTI_LAYER | 10;
     pub const TSS2_TCTI_RC_BAD_VALUE: Tss2Rc = TCTI_LAYER | 11;
     pub const TSS2_TCTI_RC_MALFORMED_RESPONSE: Tss2Rc = TCTI_LAYER | 17;
+    pub const TSS2_TCTI_RC_NOT_SUPPORTED: Tss2Rc = TCTI_LAYER | 21;
 
     /// TCTI ABI version implemented by this module (a V2 context).
     pub const TCTI_VERSION: u32 = 2;
@@ -132,6 +135,19 @@ const DEFAULT_SOCKET_PATH: &str = "/run/tpm2-proxyd/tpm2-proxyd.sock";
 const MAX_RESP_SIZE: usize = 4096;
 
 const TPM_HEADER_SIZE: usize = 10;
+
+/// Magic that opens the hello and its reply.
+const HELLO_MAGIC: [u8; 4] = *b"TPXH";
+/// Protocol version this module speaks.
+const HELLO_VERSION: u16 = 1;
+/// Size of the hello and of its reply.
+const HELLO_SIZE: usize = 8;
+/// How long to wait for the daemon's reply to the hello.
+const HELLO_TIMEOUT: Duration = Duration::from_secs(10);
+/// Hello reply statuses.
+const HELLO_ACCEPTED: u16 = 0;
+const HELLO_UNSUPPORTED: u16 = 1;
+const HELLO_BUSY: u16 = 2;
 
 const STATE_TRANSMIT: u32 = 0;
 const STATE_RECEIVE: u32 = 1;
@@ -218,10 +234,13 @@ unsafe extern "C" fn tcti_proxy_init(
         }
     };
 
-    let stream = match UnixStream::connect(path) {
+    let mut stream = match UnixStream::connect(path) {
         Ok(s) => s,
         Err(_) => return TSS2_TCTI_RC_NO_CONNECTION,
     };
+    if let Err(rc) = hello(&mut stream) {
+        return rc;
+    }
 
     // Initialize the context in place; the buffer is owned by the caller.
     let slot = ctx as *mut ProxyContext;
@@ -246,6 +265,38 @@ unsafe extern "C" fn tcti_proxy_init(
         });
     }
     TSS2_RC_SUCCESS
+}
+
+/// Send the hello and check the daemon's reply.
+///
+/// The hello is `"TPXH"`, a big-endian `u16` version, and big-endian `u16`
+/// flags (none are defined yet). The reply is `"TPXH"`, the daemon's version,
+/// and a big-endian `u16` status.
+fn hello(stream: &mut UnixStream) -> Result<(), Tss2Rc> {
+    let mut hello = [0u8; HELLO_SIZE];
+    hello[..4].copy_from_slice(&HELLO_MAGIC);
+    hello[4..6].copy_from_slice(&HELLO_VERSION.to_be_bytes());
+    stream
+        .set_read_timeout(Some(HELLO_TIMEOUT))
+        .map_err(|_| TSS2_TCTI_RC_IO_ERROR)?;
+    stream
+        .write_all(&hello)
+        .map_err(|_| TSS2_TCTI_RC_NO_CONNECTION)?;
+
+    let mut reply = [0u8; HELLO_SIZE];
+    stream
+        .read_exact(&mut reply)
+        .map_err(|_| TSS2_TCTI_RC_NO_CONNECTION)?;
+    if reply[..4] != HELLO_MAGIC {
+        return Err(TSS2_TCTI_RC_MALFORMED_RESPONSE);
+    }
+    match u16::from_be_bytes([reply[6], reply[7]]) {
+        HELLO_ACCEPTED => Ok(()),
+        HELLO_UNSUPPORTED => Err(TSS2_TCTI_RC_NOT_SUPPORTED),
+        HELLO_BUSY => Err(TSS2_TCTI_RC_NO_CONNECTION),
+        // A refusal this module doesn't know yet.
+        _ => Err(TSS2_TCTI_RC_GENERAL_FAILURE),
+    }
 }
 
 /// # Safety
@@ -452,6 +503,68 @@ mod tests {
             tcti_proxy_init(std::ptr::null_mut(), std::ptr::null_mut(), std::ptr::null())
         };
         assert_eq!(rc, TSS2_TCTI_RC_BAD_VALUE);
+    }
+
+    /// Run `init` against a fake daemon that answers the hello with `reply`,
+    /// returning `init`'s result and the hello the daemon received.
+    fn init_against(reply: [u8; HELLO_SIZE]) -> (Tss2Rc, [u8; HELLO_SIZE]) {
+        use std::os::unix::net::UnixListener;
+        use std::sync::atomic::{AtomicU32, Ordering};
+
+        static NEXT: AtomicU32 = AtomicU32::new(0);
+        let path = std::env::temp_dir().join(format!(
+            "tss2-tcti-proxy-{}-{}.sock",
+            std::process::id(),
+            NEXT.fetch_add(1, Ordering::Relaxed),
+        ));
+        let _ = std::fs::remove_file(&path);
+        let listener = UnixListener::bind(&path).unwrap();
+        let daemon = std::thread::spawn(move || {
+            let (mut stream, _) = listener.accept().unwrap();
+            let mut hello = [0u8; HELLO_SIZE];
+            stream.read_exact(&mut hello).unwrap();
+            stream.write_all(&reply).unwrap();
+            hello
+        });
+
+        let config = std::ffi::CString::new(path.to_str().unwrap()).unwrap();
+        let mut ctx = std::mem::MaybeUninit::<ProxyContext>::uninit();
+        let mut size = size_of::<ProxyContext>();
+        let ctx_ptr = ctx.as_mut_ptr().cast::<TctiContext>();
+        let rc = unsafe { tcti_proxy_init(ctx_ptr, &mut size, config.as_ptr()) };
+        if rc == TSS2_RC_SUCCESS {
+            unsafe { tcti_proxy_finalize(ctx_ptr) };
+        }
+        let hello = daemon.join().unwrap();
+        let _ = std::fs::remove_file(&path);
+        (rc, hello)
+    }
+
+    #[test]
+    fn init_maps_hello_refusals_to_tcti_errors() {
+        let cases = [
+            (
+                "unsupported",
+                *b"TPXH\0\x01\0\x01",
+                TSS2_TCTI_RC_NOT_SUPPORTED,
+            ),
+            ("busy", *b"TPXH\0\x01\0\x02", TSS2_TCTI_RC_NO_CONNECTION),
+            (
+                "unknown status",
+                *b"TPXH\0\x01\0\x09",
+                TSS2_TCTI_RC_GENERAL_FAILURE,
+            ),
+            (
+                "not a reply",
+                *b"\x80\x01\0\0\0\x0a\0\0",
+                TSS2_TCTI_RC_MALFORMED_RESPONSE,
+            ),
+        ];
+        for (name, reply, expected) in cases {
+            let (rc, hello) = init_against(reply);
+            assert_eq!(rc, expected, "{name}");
+            assert_eq!(hello, *b"TPXH\0\x01\0\0", "{name}");
+        }
     }
 
     #[test]

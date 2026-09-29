@@ -6,13 +6,16 @@
 //!
 //! Each test gets its own fresh swtpm + proxy (see [`common`]). They cover
 //! commands that succeed at the TPM, commands the TPM itself rejects (errors
-//! relayed verbatim), commands the proxy policy blocks, and concurrent load
-//! exercising the scheduler.
+//! relayed verbatim), commands the proxy policy blocks, concurrent load
+//! exercising the scheduler, and the real TCTI module as the client.
 
 mod common;
 
+use std::ffi::CString;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicUsize, Ordering};
+
+use tss2_tcti_proxy::abi::{TSS2_RC_SUCCESS, TctiContext, TctiContextCommonV2};
 
 use common::{cap, cc};
 
@@ -179,5 +182,42 @@ fn parallel_commands_are_all_served() {
         completed.load(Ordering::Relaxed),
         CONNECTIONS * PER_CONNECTION,
         "every concurrent command should complete successfully",
+    );
+}
+
+/// The TCTI module that clients load talks to the daemon: its hello is
+/// accepted and a command round-trips through the proxy to the TPM. This is
+/// what keeps the module and the daemon agreeing on the wire protocol.
+#[test]
+fn tcti_module_round_trips_through_the_proxy() {
+    let env = common::TestEnv::start_allow_all();
+    let info = unsafe { &*tss2_tcti_proxy::Tss2_Tcti_Info() };
+    let config = CString::new(env.socket().to_str().unwrap()).unwrap();
+
+    // Two-phase init, as tpm2-tss's loader does it: query the context size,
+    // then initialize a buffer of that size.
+    let mut size = 0;
+    let rc = unsafe { (info.init)(std::ptr::null_mut(), &mut size, config.as_ptr()) };
+    assert_eq!(rc, TSS2_RC_SUCCESS, "size query");
+    let mut buffer = vec![0u64; size.div_ceil(8)];
+    let ctx = buffer.as_mut_ptr().cast::<TctiContext>();
+    let rc = unsafe { (info.init)(ctx, &mut size, config.as_ptr()) };
+    assert_eq!(rc, TSS2_RC_SUCCESS, "init");
+
+    let common = unsafe { &*ctx.cast::<TctiContextCommonV2>() };
+    let command = common::get_random(8);
+    let rc = unsafe { (common.v1.transmit)(ctx, command.len(), command.as_ptr()) };
+    assert_eq!(rc, TSS2_RC_SUCCESS, "transmit");
+    let mut response = [0u8; 4096];
+    let mut size = response.len();
+    let rc = unsafe { (common.v1.receive)(ctx, &mut size, response.as_mut_ptr(), 20_000) };
+    assert_eq!(rc, TSS2_RC_SUCCESS, "receive");
+    unsafe { (common.v1.finalize)(ctx) };
+
+    let response = &response[..size];
+    assert!(
+        common::is_success(response),
+        "GetRandom through the TCTI module failed: rc={:#06x}",
+        common::response_code(response),
     );
 }

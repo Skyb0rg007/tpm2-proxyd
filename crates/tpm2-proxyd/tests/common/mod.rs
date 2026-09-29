@@ -5,8 +5,8 @@
 //! Shared harness for the end-to-end test suite.
 //!
 //! Each [`TestEnv`] spins up a **fresh** swtpm software TPM and a **fresh**
-//! `tpm2-proxyd` wired to it, and drives the proxy over its raw TPM socket (the
-//! same self-framing byte stream the downstream TCTI module speaks). Both child
+//! `tpm2-proxyd` wired to it, and drives the proxy over its socket: the hello,
+//! then the same self-framing TPM byte stream the downstream TCTI module speaks. Both child
 //! processes are killed and the temp directory removed on drop, and are also set
 //! to die with the test process via a parent-death signal so a crashing test
 //! never leaks a swtpm.
@@ -209,7 +209,6 @@ impl TestEnv {
             &[
                 format!("--config={}", policy.display()),
                 format!("--socket={}", socket.display()),
-                "--control-socket=".into(),
                 format!("--swtpm-server=unix:{}", data.display()),
                 format!("--swtpm-ctrl=unix:{}", ctrl.display()),
             ],
@@ -230,13 +229,23 @@ impl TestEnv {
         Self::start(&allow_all_policy())
     }
 
-    /// Open a new client connection to the proxy's raw TPM socket.
+    /// The proxy's socket path.
+    pub fn socket(&self) -> &Path {
+        &self.socket
+    }
+
+    /// Open a new client connection to the proxy and complete the hello.
     pub fn connect(&self) -> Client {
-        let stream = UnixStream::connect(&self.socket)
+        let mut stream = UnixStream::connect(&self.socket)
             .unwrap_or_else(|error| panic!("connect to proxy {}: {error}", self.socket.display()));
         stream
             .set_read_timeout(Some(Duration::from_secs(20)))
             .expect("set read timeout");
+        // Version 1 hello with no flags; the reply must be "accepted".
+        stream.write_all(b"TPXH\0\x01\0\0").expect("send hello");
+        let mut reply = [0u8; 8];
+        stream.read_exact(&mut reply).expect("read hello reply");
+        assert_eq!(&reply, b"TPXH\0\x01\0\0", "hello refused");
         Client { stream }
     }
 }

@@ -10,10 +10,8 @@ use clap::Parser;
 
 /// Default policy configuration file path.
 pub const DEFAULT_CONFIG_PATH: &str = "/etc/tpm2-proxyd/policy.json";
-/// Default temporary raw TPM socket path.
-pub const DEFAULT_RAW_SOCKET_PATH: &str = "/run/tpm2-proxyd/tpm2-proxyd.sock";
-/// Default Varlink control socket path.
-pub const DEFAULT_CONTROL_SOCKET_PATH: &str = "/run/tpm2-proxyd/website.soss.Tpm2Proxyd";
+/// Default client socket path.
+pub const DEFAULT_SOCKET_PATH: &str = "/run/tpm2-proxyd/tpm2-proxyd.sock";
 /// Default upstream Linux TPM resource-manager device.
 pub const DEFAULT_UPSTREAM_TPM_PATH: &str = "/dev/tpmrm0";
 /// Default number of commands that may wait for the upstream worker.
@@ -34,25 +32,15 @@ pub struct Options {
         value_parser = parse_path
     )]
     pub config: PathBuf,
-    /// Temporary raw TPM Unix socket path.
+    /// Client Unix socket path.
     #[arg(
         long,
         require_equals = true,
         value_name = "PATH",
-        default_value = DEFAULT_RAW_SOCKET_PATH,
+        default_value = DEFAULT_SOCKET_PATH,
         value_parser = parse_path
     )]
     pub socket: PathBuf,
-    /// Varlink control socket path. Use an empty value to disable the control
-    /// interface.
-    #[arg(
-        long,
-        require_equals = true,
-        value_name = "PATH",
-        default_value = DEFAULT_CONTROL_SOCKET_PATH,
-        value_parser = parse_optional_path
-    )]
-    pub control_socket: PathBuf,
     /// Upstream Linux TPM device path.
     #[arg(
         long,
@@ -114,15 +102,6 @@ impl Options {
     pub fn command_timeout(&self) -> std::time::Duration {
         std::time::Duration::from_secs(self.command_timeout_secs)
     }
-
-    /// The Varlink control socket path, or `None` when disabled (empty value).
-    pub fn control_socket(&self) -> Option<&std::path::Path> {
-        if self.control_socket.as_os_str().is_empty() {
-            None
-        } else {
-            Some(&self.control_socket)
-        }
-    }
 }
 
 impl Options {
@@ -147,11 +126,6 @@ fn parse_path(value: &str) -> Result<PathBuf, String> {
     } else {
         Ok(PathBuf::from(value))
     }
-}
-
-/// Like [`parse_path`], but accepts an empty value (used as a "disabled" sentinel).
-fn parse_optional_path(value: &str) -> Result<PathBuf, std::convert::Infallible> {
-    Ok(PathBuf::from(value))
 }
 
 fn parse_positive_usize(value: &str) -> Result<usize, String> {
@@ -181,11 +155,7 @@ mod tests {
         let options = Options::parse_from(["tpm2-proxyd"]).unwrap();
 
         assert_eq!(options.config, PathBuf::from(DEFAULT_CONFIG_PATH));
-        assert_eq!(options.socket, PathBuf::from(DEFAULT_RAW_SOCKET_PATH));
-        assert_eq!(
-            options.control_socket(),
-            Some(std::path::Path::new(DEFAULT_CONTROL_SOCKET_PATH))
-        );
+        assert_eq!(options.socket, PathBuf::from(DEFAULT_SOCKET_PATH));
         assert_eq!(options.upstream, PathBuf::from(DEFAULT_UPSTREAM_TPM_PATH));
         assert_eq!(options.max_packet_size, crate::tpm::DEFAULT_MAX_PACKET_SIZE);
         assert_eq!(options.queue_depth, DEFAULT_QUEUE_DEPTH);
@@ -216,12 +186,6 @@ mod tests {
         assert_eq!(options.upstream, PathBuf::from("/tmp/tpmrm0"));
         assert_eq!(options.max_packet_size, 8192);
         assert_eq!(options.queue_depth, 32);
-    }
-
-    #[test]
-    fn control_socket_can_be_disabled_with_empty_value() {
-        let options = Options::parse_from(["tpm2-proxyd", "--control-socket="]).unwrap();
-        assert_eq!(options.control_socket(), None);
     }
 
     #[test]

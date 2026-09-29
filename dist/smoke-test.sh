@@ -79,7 +79,7 @@ else
 fi
 
 RUST_LOG="${RUST_LOG:-info}" "$daemon" \
-  --config="$policy" --socket="$sock" --control-socket= "${upstream_args[@]}" &
+  --config="$policy" --socket="$sock" "${upstream_args[@]}" &
 daemon_pid=$!
 
 for _ in $(seq 1 50); do

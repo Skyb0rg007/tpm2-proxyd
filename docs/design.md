@@ -12,65 +12,64 @@ clients and an upstream TCTI (the kernel resource manager `/dev/tpmrm0` or
 access/permission policy, and forwards allowed commands upstream. It is **not**
 a resource manager: it does not virtualize transient objects or sessions.
 
-## Transport: a single Varlink socket
+## Transport: one socket, a custom binary protocol
 
-The daemon exposes exactly **one** socket: a Varlink socket at
-`/run/tpm2-proxyd/website.soss.Tpm2Proxyd`, implementing the
-`website.soss.Tpm2Proxyd` interface. Both administration and TPM access happen
-over this one socket — there is no separate raw byte-stream socket.
+The daemon serves one Unix socket, `/run/tpm2-proxyd/tpm2-proxyd.sock` by
+default, created by the daemon or by systemd socket activation. The socket is
+`tss:tss 0666`: any local user may connect, and the policy decides per
+connection. The peer's UID, GID and PID come from the socket's credentials
+(`SO_PEERCRED`), plus a lookup of the user's supplementary groups.
 
-It serves two kinds of traffic:
+Every connection opens with a **hello**, then carries TPM traffic:
 
-1. **Control methods** — ordinary Varlink calls for administration and
-   inspection (status, reloading policy, listing active clients, …), handled by
-   `management`. A client that only issues control methods never touches the TPM
-   data path.
-2. **TPM access** — a client calls the access method, e.g.
-   `RequestTpmAccess(priority: <level>)`, with the Varlink `upgrade: true` flag.
-   On success the server replies and then **upgrades** the connection: Varlink
-   message framing is dropped and the socket becomes a raw, self-framing TPM
-   command/response stream for the rest of its life (the 10-byte TPM header
-   carries the length). This upgraded connection is what the downstream
-   `tss2-tcti-proxy` module drives.
+1. **Hello.** The client sends 8 bytes: the magic `"TPXH"`, a `u16` protocol
+   version (currently `1`), and `u16` flags. The server answers with 8 bytes:
+   `"TPXH"`, its own version, and a `u16` status. Fields are big-endian, like TPM
+   fields.
 
-   **Implementation status:** the protocol upgrade is blocked on upstream `zlink`
-   support for handing an upgraded connection to the service. The control methods
-   (`GetStatus`, `ListConnections`, `ReloadPolicy`) are implemented and served on
-   the control socket today; the upgraded TPM-access method will be added when
-   that API is available.
+   | Status | Meaning |
+   | --- | --- |
+   | `0` | Accepted: the connection may send TPM commands. |
+   | `1` | Unsupported: unknown version or flag. |
+   | `2` | Busy: the connection limit (`--max-connections`) is reached. |
 
-   In the meantime the daemon exposes a separate raw Unix-domain TPM socket as
-   the interim TPM transport (created by the daemon or via systemd socket
-   activation). That listener accepts self-framing TPM command bytes directly,
-   derives the peer UID/GID/PID from Unix socket credentials (`SO_PEERCRED`) plus
-   supplementary-group lookup, and leaves the connection priority entirely to
-   policy rules for that UID/GID.
+   After any refusal the server closes the connection. A connection that
+   doesn't open with the magic isn't speaking this protocol, so the server
+   closes it without replying, as it does a connection that sends nothing
+   within 10 seconds.
 
-Requesting access explicitly — with a priority — before upgrading means the
-server learns the client's intent and scheduling priority up front and pairs it
-with the peer identity (`SO_PEERCRED`, read from the connected socket) for policy
-and scheduling decisions.
+   No flags are defined yet, and unknown flags are refused rather than ignored,
+   so a client never silently loses an option it depends on. Per-connection
+   options such as transparent parameter encryption
+   ([auto-encrypt.md](auto-encrypt.md)) are expected to become flags.
+2. **TPM commands.** After an accepted hello, the connection is a self-framing
+   TPM command/response stream for the rest of its life: each command and
+   response is sent verbatim, and the 10-byte TPM header carries the length.
+
+The downstream `tss2-tcti-proxy` module sends the hello from its `init`, so a
+refused connection fails `init` with a TCTI error rather than failing on the
+first command.
+
+Clients can't choose their priority yet: the policy's cap for the peer's
+UID/GID sets it. The policy is reloaded on `SIGHUP`; there is no control
+interface for status or reloads.
 
 ## Request pipeline
 
-Once a connection has upgraded, each TPM command flows through:
+Once a connection's hello is accepted, each TPM command flows through:
 
 ```text
-  upgraded ──▶ server ──▶ broker ──inspect──────────▶ tpm
-  connection                 │
-                             ├──authorize──────────▶ policy
-                             │
-                             ├──acquire (priority)─▶ scheduler
-                             │
-                             └──forward────────────▶ upstream ──▶ TPM
+  connection ──▶ server ──▶ broker ──inspect──────────▶ tpm
+                              │
+                              ├──authorize──────────▶ policy
+                              │
+                              ├──acquire (priority)─▶ scheduler
+                              │
+                              └──forward────────────▶ upstream ──▶ TPM
 ```
 
-- `server` owns the single Varlink socket: it accepts connections, dispatches
-  control methods to `management`, performs the upgrade on an access request, and
-  then runs the per-connection raw TPM stream. Peer identity comes from
-  `SO_PEERCRED`.
-- `management` implements the control methods of the `website.soss.Tpm2Proxyd`
-  interface.
+- `server` owns the socket: it accepts connections, runs the hello, and then
+  runs the per-connection TPM stream. Peer identity comes from `SO_PEERCRED`.
 - `broker` runs the per-command pipeline and owns shared state.
 - `policy` answers allow/deny for a `(peer, command)` and bounds the priority a
   peer may request.
@@ -161,11 +160,11 @@ accounting remain planned rather than active in this command path.
 - **Mutual exclusion.** Exactly one lease exists; holding it grants exclusive
   use of `upstream`. Released after the response (or timeout).
 - **Wait queue + priority + fairness.** Clients blocked on the lease wait in a
-  queue ordered first by the **priority** the connection requested at
-  `RequestTpmAccess` time, then by a configurable fairness policy within a
+  queue ordered first by the connection's **priority**, set at admission, then
+  by a configurable fairness policy within a
   priority band (FIFO initially; weighted fair-share across UIDs is the intended
   target so no single user dominates its band). The requested priority is fixed
-  for the life of the upgraded connection and is capped by `policy` per
+  for the life of the connection and is capped by `policy` per
   user/group, so a client cannot simply demand top priority.
 - **Time-slice accounting.** The scheduler measures wall-clock time each client
   holds the lease. When a client's slice is exhausted it must go to the back of
@@ -188,7 +187,7 @@ accounting remain planned rather than active in this command path.
 - hard per-command timeout (hang protection),
 - per-UID quota and its window length,
 - scheduling/fairness policy selection,
-- the maximum priority each user/group may request at `RequestTpmAccess`.
+- the maximum priority each user/group may request at admission.
 
 Limits may be overridable per user/group so trusted services can be given larger
 slices, higher quotas, or higher priority than ordinary interactive clients.

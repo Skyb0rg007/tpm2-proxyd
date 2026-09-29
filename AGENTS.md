@@ -51,13 +51,12 @@ Request flow (also drawn in `main.rs`'s module docs):
 → `scheduler` (single worker, priority-ordered, one TPM transaction at a time,
 per-client sessions) → `upstream` (the TPM).
 
-- Two Unix sockets: the raw TPM socket (default
-  `/run/tpm2-proxyd/tpm2-proxyd.sock`) and a Varlink control socket
-  (`website.soss.Tpm2Proxyd`: status, connection listing, policy reload). The
-  design's eventual single Varlink protocol-upgrade socket is blocked on
-  upstream `zlink` support; the raw socket is the interim TPM transport. The
-  listener/connection APIs in `server/` are transport independent so the
-  Varlink upgrade can slot in later.
+- One Unix socket (default `/run/tpm2-proxyd/tpm2-proxyd.sock`) speaking a
+  custom binary protocol: each connection opens with an 8-byte hello
+  (`server/hello.rs`: magic, version, flags; the reply carries a status), then
+  carries the raw, self-framing TPM command/response stream. There is no
+  control interface; don't add Varlink or D-Bus. New per-connection options go
+  in the hello's flags. The hello is spelled out in `docs/design.md`.
 - Upstreams: `TpmDeviceUpstream` (`/dev/tpmrm0` via `tpm2-device`, the
   default) and `upstream/swtpm.rs` (`--swtpm-server=<addr>`, optional
   `--swtpm-ctrl=<addr>`), used by the end-to-end tests.
@@ -73,12 +72,8 @@ per-client sessions) → `upstream` (the TPM).
   flushes whatever they leave loaded. Don't go back to one shared fd: abandoned
   objects pile up and exhaust the kernel RM's 3-objects-per-fd limit. The swtpm
   upstream can't isolate sessions and ignores them.
-- The zlink Varlink server future is not `Send`, so `varlink::run` runs on the
-  main task via `tokio::select!` rather than `tokio::spawn` (spawning it trips
-  rust-lang/rust#100013).
 - `systemd` provides socket activation, `sd_notify` readiness, and watchdog.
-  `SIGHUP` and the Varlink `ReloadPolicy` method both re-read the policy file
-  and swap it in atomically.
+  `SIGHUP` re-reads the policy file and swaps it in atomically.
 
 ### Policy
 
@@ -107,11 +102,12 @@ mirroring `references/tpm2-tss/include/tss2/tss2_tcti.h` — there is no C code 
   pointer offsets line up. The caller allocates the context, so it stays POD —
   store the socket as a `RawFd`, not an owned `UnixStream`.
 - `init` is two-phase: `ctx == NULL` reports `*size`; otherwise it initializes
-  in place and connects the socket. A TRANSMIT/RECEIVE state machine mirrors
-  tpm2-tss's `tcti-common`.
-- The wire protocol is the raw, self-framing TPM byte stream over the socket;
-  it must stay in sync with the daemon's raw TPM socket
-  (`server/unix.rs`, `server/connection.rs`).
+  in place, connects the socket, and exchanges the hello; a refused hello fails
+  `init`. A TRANSMIT/RECEIVE state machine mirrors tpm2-tss's `tcti-common`.
+- The wire protocol (the hello, then the raw TPM byte stream) must stay in sync
+  with the daemon (`server/hello.rs`, `server/connection.rs`). The e2e test
+  `tcti_module_round_trips_through_the_proxy` drives this module against the
+  real daemon to catch drift.
 
 Cargo emits `libtss2_tcti_proxy.so` (underscores). The loader searches for
 `libtss2-tcti-<name>.so`, so install/symlink it as `libtss2-tcti-proxy.so` to
@@ -134,8 +130,6 @@ members can open `/dev/tpmrm0` directly and bypass the policy.
   group, now gone). `tpm2-protocol` provides TPM marshalling and the command views
   the daemon uses to inspect traffic; `tpm2-device` is the `/dev/tpmrm0`
   transport. Bump them together (`tpm2-device` depends on `tpm2-protocol`).
-- `zlink` — Varlink IPC for the management interface (rather than the D-Bus
-  interface used by `tpm2-abrmd`).
 - `tokio` — async runtime for handling concurrent downstream connections.
 
 ## Reference material
@@ -155,7 +149,7 @@ consultation, not part of the build. It is excluded from git by
 - `references/tpm-rs/` — the `tpm-rs` project (formerly a dependency, no longer
   used); `docs/coding-style.md` has its conventions.
 - `references/tpm2-abrmd/` — the C resource-manager broker; the closest prior art
-  for the daemon/IPC/connection-management design (note: D-Bus, not Varlink).
+  for the daemon/IPC/connection-management design (note: it uses D-Bus).
 - `references/tpm2-tss/` — the reference TSS/TCTI implementation; authoritative
   for TCTI semantics.
 - `references/tbs-design.md` — TBS-inspired policy requirements.

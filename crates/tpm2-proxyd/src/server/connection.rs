@@ -4,30 +4,46 @@
 
 //! Listener-independent downstream TPM command handling.
 //!
-//! [`serve_listener`] accepts [`ClientStream`] values from a [`Listener`].
-//! Neither API assumes Unix sockets, TCP, or Varlink: a future Varlink upgrade
-//! handoff can implement the same traits without changing command scheduling.
+//! [`serve_listener`] accepts [`ClientStream`] values from a [`Listener`],
+//! runs each connection's hello, then serves its TPM commands. Neither API
+//! assumes Unix sockets or TCP.
 
 #![allow(dead_code)] // Wired into main once daemon construction is implemented.
 
 use std::{future::Future, io, time::Duration};
 
-use tokio::io::{AsyncRead, AsyncWrite, AsyncWriteExt};
+use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt};
 use tokio::sync::watch;
 use tokio::task::JoinSet;
 
 use crate::{
     broker::{Broker, BrokerError, Client},
     scheduler::Priority,
-    server::{peer::Peer, registry::ConnectionRegistry},
+    server::{
+        hello::{self, Hello, HelloStatus},
+        peer::Peer,
+        registry::ConnectionRegistry,
+    },
     tpm::{self, Command, Response},
 };
 
 /// How long shutdown waits for in-flight connections to drain before aborting.
 const SHUTDOWN_GRACE: Duration = Duration::from_secs(10);
 
-/// A connected client capable of exchanging framed TPM packets.
+/// How long a new connection has to send its hello.
+pub(crate) const HELLO_TIMEOUT: Duration = Duration::from_secs(10);
+
+/// A connected client capable of exchanging the hello and framed TPM packets.
 pub trait ClientStream: Send + 'static {
+    /// Read the client's hello.
+    fn read_hello(&mut self) -> impl Future<Output = io::Result<Hello>> + Send;
+
+    /// Answer the client's hello.
+    fn write_hello_reply(
+        &mut self,
+        status: HelloStatus,
+    ) -> impl Future<Output = io::Result<()>> + Send;
+
     /// Read the next command, or `None` for a clean EOF between commands.
     fn read_command(
         &mut self,
@@ -45,6 +61,17 @@ impl<T> ClientStream for T
 where
     T: AsyncRead + AsyncWrite + Unpin + Send + 'static,
 {
+    async fn read_hello(&mut self) -> io::Result<Hello> {
+        let mut bytes = [0; hello::SIZE];
+        self.read_exact(&mut bytes).await?;
+        Hello::parse(bytes)
+    }
+
+    async fn write_hello_reply(&mut self, status: HelloStatus) -> io::Result<()> {
+        self.write_all(&status.reply()).await?;
+        self.flush().await
+    }
+
     async fn read_command(&mut self, max_command_size: usize) -> io::Result<Option<Command>> {
         tpm::read_command(self, max_command_size).await
     }
@@ -145,9 +172,9 @@ where
 
 /// Accept clients forever and run each connection in its own task.
 ///
-/// Client tasks only parse, authorize, enqueue, and return responses. The
-/// scheduler worker behind [`Broker`] remains the sole owner of the upstream
-/// TCTI.
+/// Client tasks only exchange the hello, parse, authorize, enqueue, and return
+/// responses. The scheduler worker behind [`Broker`] remains the sole owner of
+/// the upstream TCTI.
 pub async fn serve_listener<L>(
     mut listener: L,
     broker: Broker,
@@ -170,19 +197,18 @@ where
             }
             accepted = listener.accept() => {
                 let accepted = accepted?;
-                let peer = accepted.peer;
-                let client = broker.admit(peer.clone(), accepted.requested_priority);
-                let Some(guard) = registry.register(&peer, client.priority()) else {
-                    tracing::warn!(uid = peer.uid, "connection limit reached; rejecting client");
-                    continue;
-                };
+                let broker = broker.clone();
+                let registry = registry.clone();
                 let connection_shutdown = shutdown.clone();
-                let stream = accepted.stream;
                 tasks.spawn(async move {
-                    let _guard = guard;
-                    if let Err(error) =
-                        serve_connection(stream, client, max_command_size, connection_shutdown)
-                            .await
+                    if let Err(error) = serve_client(
+                        accepted,
+                        &broker,
+                        &registry,
+                        max_command_size,
+                        connection_shutdown,
+                    )
+                    .await
                     {
                         tracing::debug!(%error, "downstream TPM connection closed with an error");
                     }
@@ -211,6 +237,47 @@ async fn drain(mut tasks: JoinSet<()>) {
         tracing::warn!("shutdown grace period elapsed; aborting remaining connections");
         tasks.shutdown().await;
     }
+}
+
+/// Run one accepted connection: the hello, admission, then its commands.
+///
+/// The client has [`HELLO_TIMEOUT`] to send its hello. A connection is counted
+/// against the registry's cap only once its hello is accepted.
+async fn serve_client<S>(
+    accepted: Accepted<S>,
+    broker: &Broker,
+    registry: &ConnectionRegistry,
+    max_command_size: usize,
+    mut shutdown: watch::Receiver<bool>,
+) -> Result<(), ConnectionError>
+where
+    S: ClientStream,
+{
+    let Accepted {
+        mut stream,
+        peer,
+        requested_priority,
+    } = accepted;
+
+    let hello = tokio::select! {
+        _ = shutdown.changed() => return Ok(()),
+        hello = tokio::time::timeout(HELLO_TIMEOUT, stream.read_hello()) => {
+            hello.map_err(|_| io::Error::new(io::ErrorKind::TimedOut, "no hello received"))??
+        }
+    };
+    if let Err(status) = hello.check() {
+        stream.write_hello_reply(status).await?;
+        return Err(ConnectionError::Refused(status));
+    }
+    let Some(_guard) = registry.register() else {
+        tracing::warn!(uid = peer.uid, "connection limit reached; rejecting client");
+        stream.write_hello_reply(HelloStatus::Busy).await?;
+        return Err(ConnectionError::Refused(HelloStatus::Busy));
+    };
+    let client = broker.admit(peer, requested_priority);
+    stream.write_hello_reply(HelloStatus::Accepted).await?;
+
+    serve_connection(stream, client, max_command_size, shutdown).await
 }
 
 /// Serve commands from one admitted client until EOF, shutdown, or failure.
@@ -253,6 +320,9 @@ pub enum ConnectionError {
     /// Downstream transport or packet framing failed.
     #[error("downstream I/O failed: {0}")]
     Io(#[from] io::Error),
+    /// The server refused the client's hello.
+    #[error("hello refused: {0:?}")]
+    Refused(HelloStatus),
     /// Policy, scheduler, or upstream TCTI rejected the command.
     #[error("TPM command failed: {0}")]
     Broker(#[from] BrokerError),

@@ -10,31 +10,22 @@
 //! serial TPM, and forwards allowed commands upstream. See `CLAUDE.md` and
 //! `docs/design.md`.
 //!
-//! It exposes two Unix sockets:
+//! It serves one Unix socket (default `/run/tpm2-proxyd/tpm2-proxyd.sock`).
+//! Each connection opens with a hello (see `server::hello`), then carries the
+//! self-framing TPM command/response byte stream from the downstream
+//! `tss2-tcti-proxy` module.
 //!
-//! - a **raw TPM socket** (default `/run/tpm2-proxyd/tpm2-proxyd.sock`) carrying
-//!   the self-framing TPM command/response byte stream from the downstream
-//!   `tss2-tcti-proxy` module, and
-//! - a **Varlink control socket** (default
-//!   `/run/tpm2-proxyd/website.soss.Tpm2Proxyd`) for status, connection listing,
-//!   and policy reload.
-//!
-//! (The design's eventual single Varlink protocol-upgrade socket is blocked on
-//! upstream `zlink` support; the raw socket is the interim TPM transport.)
-//!
-//! Request flow on the raw socket:
+//! Request flow:
 //!
 //! ```text
-//!   client ──raw TPM socket──▶ server ──▶ broker ──inspect──────────▶ tpm
-//!                                 │           ├──authorize──────────▶ policy
-//!                                 │           ├──acquire (priority)─▶ scheduler
-//!                                 │           └──forward────────────▶ upstream ──▶ TPM
-//!                                 └──control methods──▶ management (Varlink)
+//!   client ──socket──▶ server ──▶ broker ──inspect──────────▶ tpm
+//!                                   ├──authorize──────────▶ policy
+//!                                   ├──acquire (priority)─▶ scheduler
+//!                                   └──forward────────────▶ upstream ──▶ TPM
 //! ```
 //!
-//! `cli` and `config` supply settings, `management` backs the Varlink control
-//! methods, and `systemd` provides socket activation, readiness, and watchdog
-//! integration.
+//! `cli` and `config` supply settings, and `systemd` provides socket
+//! activation, readiness, and watchdog integration. `SIGHUP` reloads the policy.
 
 /// Core proxy pipeline and shared runtime state: inspect → authorize → forward.
 mod broker;
@@ -42,8 +33,6 @@ mod broker;
 mod cli;
 /// On-disk configuration model and loading.
 mod config;
-/// Backend for the Varlink control interface.
-mod management;
 /// Access-control rule model and evaluation engine.
 mod policy;
 /// Non-preemptive upstream TPM command scheduler.
@@ -56,9 +45,8 @@ mod systemd;
 mod tpm;
 /// Upstream client that talks to the physical TPM's resource manager.
 mod upstream;
-/// Varlink (`zlink`) protocol types and control service.
-mod varlink;
 
+use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 use std::time::Duration;
 
@@ -92,27 +80,13 @@ async fn run(options: cli::Options) -> anyhow::Result<()> {
     let (scheduler, upstream_label) = start_scheduler(&options).await?;
     let broker = broker::Broker::new(policy, scheduler);
     let registry = server::registry::ConnectionRegistry::new(options.max_connections);
-    let management =
-        management::Management::new(broker.clone(), registry.clone(), options.config.clone());
 
     let listener = server::unix::RawTpmListener::from_systemd_or_bind(&options.socket)
         .with_context(|| format!("binding raw TPM socket {}", options.socket.display()))?;
 
     let (shutdown_tx, shutdown_rx) = watch::channel(false);
-    spawn_signal_handlers(shutdown_tx, management.clone())?;
+    spawn_signal_handlers(shutdown_tx, broker.clone(), options.config.clone())?;
     spawn_watchdog();
-
-    let control_socket = match options.control_socket() {
-        Some(path) => {
-            server::unix::prepare_socket_path(path)
-                .with_context(|| format!("preparing control socket {}", path.display()))?;
-            Some(path.to_path_buf())
-        }
-        None => {
-            tracing::info!("Varlink control interface disabled");
-            None
-        }
-    };
 
     let _ = systemd::sd_notify("READY=1");
     tracing::info!(
@@ -121,29 +95,15 @@ async fn run(options: cli::Options) -> anyhow::Result<()> {
         "tpm2-proxyd ready",
     );
 
-    let serve = server::connection::serve_listener(
+    let result = server::connection::serve_listener(
         listener,
         broker,
         registry,
         options.max_packet_size,
         shutdown_rx,
-    );
-
-    // The Varlink server is not `Send`, so it runs on this task alongside the
-    // listener rather than in a spawned task. A clean listener shutdown ends the
-    // daemon; the control future is then dropped.
-    let result = match control_socket {
-        Some(path) => {
-            tracing::info!(socket = %path.display(), "serving Varlink control interface");
-            tokio::select! {
-                served = serve => served.context("serving raw TPM socket"),
-                control = varlink::run(path, management) => {
-                    control.context("Varlink control service stopped")
-                }
-            }
-        }
-        None => serve.await.context("serving raw TPM socket"),
-    };
+    )
+    .await
+    .context("serving TPM socket");
 
     let _ = systemd::sd_notify("STOPPING=1");
     // The daemon owns the raw socket only when it bound the path itself; under
@@ -204,7 +164,8 @@ fn init_tracing() {
 /// Spawn SIGTERM/SIGINT (shutdown) and SIGHUP (policy reload) handlers.
 fn spawn_signal_handlers(
     shutdown: watch::Sender<bool>,
-    management: management::Management,
+    broker: broker::Broker,
+    config_path: PathBuf,
 ) -> anyhow::Result<()> {
     let mut sigterm = signal(SignalKind::terminate()).context("installing SIGTERM handler")?;
     let mut sigint = signal(SignalKind::interrupt()).context("installing SIGINT handler")?;
@@ -221,7 +182,7 @@ fn spawn_signal_handlers(
     tokio::spawn(async move {
         while sighup.recv().await.is_some() {
             tracing::info!("received SIGHUP; reloading policy");
-            match management.reload() {
+            match reload_policy(&broker, &config_path) {
                 Ok(generation) => tracing::info!(generation, "policy reloaded"),
                 Err(error) => tracing::error!(error = format!("{error:#}"), "policy reload failed"),
             }
@@ -229,6 +190,15 @@ fn spawn_signal_handlers(
     });
 
     Ok(())
+}
+
+/// Re-read the policy file and atomically swap it in, returning the new
+/// policy generation.
+fn reload_policy(broker: &broker::Broker, config_path: &Path) -> anyhow::Result<u64> {
+    let policy = config::Config::load(config_path)
+        .with_context(|| format!("loading config {}", config_path.display()))?
+        .policy();
+    Ok(broker.replace_policy(policy))
 }
 
 /// Spawn the systemd watchdog keep-alive task, if a watchdog is configured.

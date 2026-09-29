@@ -4,9 +4,7 @@
 
 //! Raw TPM command listener for Unix-domain sockets.
 //!
-//! This is the temporary TPM transport while Varlink protocol upgrades are
-//! blocked upstream. It accepts already-framed TPM command bytes directly and
-//! derives admission context from Unix peer credentials. Clients cannot request
+//! Derives admission context from Unix peer credentials. Clients cannot request
 //! their own priority; the listener asks for [`Priority::MAX`] and the broker's
 //! policy cap for the peer's UID/GID determines the effective priority.
 
@@ -47,7 +45,7 @@ impl PeerResolver for UnixPeerResolver {
     }
 }
 
-/// Unix listener that speaks only the raw TPM byte-stream protocol.
+/// Unix listener for downstream clients.
 #[derive(Debug)]
 pub struct RawTpmListener<R = UnixPeerResolver> {
     inner: UnixListener,

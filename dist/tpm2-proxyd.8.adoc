@@ -19,8 +19,9 @@ tpm2-proxyd - per-user access-control proxy for a TPM 2.0 device
 == Description
 
 *tpm2-proxyd* is a Linux system service that mediates access to a TPM 2.0
-device. It accepts the raw TPM command/response byte stream from downstream
-clients, inspects each command, checks it against a configurable per-user access
+device. Downstream clients connect to its Unix socket, usually through the
+*proxy* TCTI module; each connection opens with a short hello, then carries the
+raw TPM command/response byte stream. The daemon inspects each command, checks it against a configurable per-user access
 policy, schedules access to the serial TPM, and forwards permitted commands to
 the upstream Linux kernel resource manager, usually _/dev/tpmrm0_.
 
@@ -42,13 +43,8 @@ example:
 Policy configuration file. The default is _/etc/tpm2-proxyd/policy.json_.
 
 *--socket*=_PATH_::
-Raw TPM Unix socket clients connect to. The default is
+Unix socket clients connect to. The default is
 _/run/tpm2-proxyd/tpm2-proxyd.sock_. Ignored under socket activation.
-
-*--control-socket*=_PATH_::
-Varlink control socket. The default is
-_/run/tpm2-proxyd/website.soss.Tpm2Proxyd_. An empty value disables the control
-interface.
 
 *--upstream*=_PATH_::
 Upstream TPM device. The default is _/dev/tpmrm0_.

@@ -31,12 +31,12 @@ before forwarding.
                                     /dev/tpmrm0
 ```
 
-- **Daemon** (`tpm2-proxyd`): opens `/dev/tpmrm0`, serves a raw TPM Unix socket,
-  enforces policy, and forwards allowed commands. It also serves a Varlink
-  control socket for status/reload.
+- **Daemon** (`tpm2-proxyd`): opens `/dev/tpmrm0`, serves a Unix socket,
+  enforces policy, and forwards allowed commands. `SIGHUP` reloads the policy.
 - **TCTI module** (`libtss2-tcti-proxy.so`): loaded into client processes by
-  tpm2-tss's dynamic loader; forwards the raw command/response byte stream to the
-  daemon socket.
+  tpm2-tss's dynamic loader; opens each connection with a hello, then forwards
+  the raw command/response byte stream to the daemon socket. See
+  `docs/design.md` for the protocol.
 
 ## Building
 
@@ -138,19 +138,9 @@ this whole path.
 ## Command-line options
 
 See `tpm2-proxyd --help` or `man 8 tpm2-proxyd`. Common options:
-`--config`, `--socket`, `--control-socket` (empty to disable), `--upstream`,
+`--config`, `--socket`, `--upstream`,
 `--swtpm-server`/`--swtpm-ctrl`, `--max-connections`, `--command-timeout-secs`.
 Logging is controlled by `RUST_LOG` (default `info`).
-
-## Control interface
-
-The Varlink interface `website.soss.Tpm2Proxyd` (default socket
-`/run/tpm2-proxyd/website.soss.Tpm2Proxyd`) exposes `GetStatus`,
-`ListConnections`, and `ReloadPolicy`. For example, with `varlink`:
-
-```sh
-varlink call /run/tpm2-proxyd/website.soss.Tpm2Proxyd/website.soss.Tpm2Proxyd.GetStatus '{}'
-```
 
 ## Development
 

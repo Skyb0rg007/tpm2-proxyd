@@ -2,20 +2,19 @@
 //
 // SPDX-License-Identifier: Apache-2.0
 
-//! The single Varlink socket: listener, dispatch, and connection upgrade.
+//! The client socket: listener, hello, and per-connection handling.
 //!
-//! Binds the daemon's one socket (default
-//! `/run/tpm2-proxyd/website.soss.Tpm2Proxyd`), accepts client connections, and
-//! resolves each peer's credentials ([`peer`]).
+//! Binds the daemon's socket (default `/run/tpm2-proxyd/tpm2-proxyd.sock`),
+//! accepts client connections, and resolves each peer's credentials ([`peer`]).
 //!
-//! Once a transport has admitted a TPM client, [`connection`] parses its
-//! self-framing TPM command stream and submits commands to
-//! [`crate::scheduler::CommandScheduler`]. The listener API is transport
-//! independent and supports raw Unix/TCP sockets now, with a future Varlink
-//! upgrade handoff able to implement the same interface. See `docs/design.md`.
+//! Each connection opens with a [`hello`]. Once it is accepted, [`connection`]
+//! parses the client's self-framing TPM command stream and submits commands to
+//! [`crate::scheduler::CommandScheduler`]. See `docs/design.md`.
 
-/// Post-upgrade per-connection handling: raw TPM command/response streaming.
+/// Per-connection handling: the hello, then TPM command/response streaming.
 pub(crate) mod connection;
+/// The hello that opens every connection.
+pub(crate) mod hello;
 /// Peer credential (uid/gid/pid) resolution from the connected socket.
 pub(crate) mod peer;
 /// Active downstream connection tracking and concurrency cap.

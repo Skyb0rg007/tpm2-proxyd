@@ -4,9 +4,8 @@
 
 //! On-disk configuration model and loading.
 //!
-//! This is a deliberately small, test-only JSON format. Long-term policy
-//! updates are expected to arrive through the Varlink management interface once
-//! protocol upgrade support exists upstream.
+//! This is a deliberately small, test-only JSON format; `docs/policy-language.md`
+//! describes its planned replacement. `SIGHUP` reloads it.
 
 use std::{fs, io, path::Path};
 
