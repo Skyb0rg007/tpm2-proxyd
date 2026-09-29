@@ -926,7 +926,7 @@ dependencies = [
  "rand",
  "strum",
  "thiserror 1.0.69",
- "tpm2-protocol",
+ "tpm2-protocol 0.19.0",
 ]
 
 [[package]]
@@ -941,7 +941,7 @@ dependencies = [
  "rand",
  "thiserror 1.0.69",
  "tpm2-crypto",
- "tpm2-protocol",
+ "tpm2-protocol 0.19.0",
  "tracing",
 ]
 
@@ -950,6 +950,12 @@ name = "tpm2-protocol"
 version = "0.19.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "467b65fffdfd21c3c4a6d2a86ba807ce99a3888901fcaa50534f8d443c7d4699"
+
+[[package]]
+name = "tpm2-protocol"
+version = "1.2.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "716a304e5da8a068e04c02de12a482666ba4da1a7902299aee55fd30cc4bd0eb"
 
 [[package]]
 name = "tpm2-proxyd"
@@ -965,7 +971,7 @@ dependencies = [
  "thiserror 2.0.21",
  "tokio",
  "tpm2-device",
- "tpm2-protocol",
+ "tpm2-protocol 1.2.0",
  "tracing",
  "tracing-subscriber",
  "zlink",
