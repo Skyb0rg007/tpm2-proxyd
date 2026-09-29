@@ -7,7 +7,7 @@ SPDX-License-Identifier: Apache-2.0
 # TPM2 Commands Recognized by tpm2-protocol
 
 This table tracks the `TpmCc` enum in
-`references/tpm2-protocol/src/data/enum/mod.rs`. These are the TPM command
+`references/tpm2-library/crates/protocol/src/data/enum/mod.rs`. These are the TPM command
 codes that `tpm2-proxyd` can parse as recognized commands through
 `tpm2_protocol::data::TpmCc`.
 

@@ -132,8 +132,9 @@ systemd `.service`/`.socket` units, a sysusers file, the man page source
 
 ## Key dependencies (and why they matter for architecture)
 
-- `tpm2-protocol` / `tpm2-device` — from the `tpm-protocol` GitLab project
-  (crates.io). `tpm2-protocol` provides TPM marshalling and the command views
+- `tpm2-protocol` / `tpm2-device` — crates.io crates from the
+  `jarkkojs/tpm2-library` GitHub monorepo (formerly the `tpm-protocol` GitLab
+  group, now gone). `tpm2-protocol` provides TPM marshalling and the command views
   the daemon uses to inspect traffic; `tpm2-device` is the `/dev/tpmrm0`
   transport. Bump them together (`tpm2-device` depends on `tpm2-protocol`).
 - `zlink` — Varlink IPC for the management interface (rather than the D-Bus
@@ -146,14 +147,14 @@ systemd `.service`/`.socket` units, a sysusers file, the man page source
 consultation, not part of the build. It is excluded from git by
 `.git/info/exclude`.
 
-- `references/tpm2-protocol/`, `references/tpm2-device/` — sources of the
-  dependencies above.
-- `references/tpm2-crypto/`, `references/tpm2-vtpm/`,
-  `references/tpm2-policy-language/` — sibling `tpm-protocol` crates (TPM
-  crypto routines, a saved-context cache, and a TPM policy expression
-  language).
-- `references/tpm2sh/` — a CLI by the same upstream author; the model for how
-  to integrate `tpm2-protocol`/`tpm2-device`.
+- `references/tpm2-library/` — the upstream monorepo
+  (https://github.com/jarkkojs/tpm2-library), checked out at the tag matching
+  `Cargo.lock`. Its `crates/` holds the sources of the dependencies above
+  (`protocol/`, `device/`) and their siblings: `crypto/` (TPM crypto
+  routines), `vtpm/` (a saved-context cache), `policy-language/` (a TPM policy
+  expression language), `tpmkey/` (TPM 2.0 key ASN.1 files), and `sh/`
+  (`tpm2sh`, a CLI that is the model for integrating
+  `tpm2-protocol`/`tpm2-device`).
 - `references/tpm-rs/` — the `tpm-rs` project (formerly a dependency, no longer
   used); `docs/coding-style.md` has its conventions.
 - `references/tpm2-abrmd/` — the C resource-manager broker; the closest prior art
