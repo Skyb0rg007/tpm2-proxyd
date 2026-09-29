@@ -138,7 +138,7 @@ impl Upstream for SwtpmUpstream {
         if self.data.is_none() {
             let data = connect(&self.server)
                 .await
-                .map_err(|error| UpstreamError::Transport(Box::new(error)))?;
+                .map_err(UpstreamError::transport)?;
             self.data = Some(data);
         }
         let data = self.data.as_mut().expect("connected above");
@@ -155,11 +155,11 @@ impl Upstream for SwtpmUpstream {
                 // Drop the connection so the next command starts from a clean,
                 // re-synchronized stream.
                 self.data = None;
-                return Err(UpstreamError::Transport(Box::new(error)));
+                return Err(UpstreamError::transport(error));
             }
             Err(_elapsed) => {
                 self.data = None;
-                return Err(UpstreamError::Transport(Box::new(SwtpmError::Timeout)));
+                return Err(UpstreamError::transport(SwtpmError::Timeout));
             }
         };
 

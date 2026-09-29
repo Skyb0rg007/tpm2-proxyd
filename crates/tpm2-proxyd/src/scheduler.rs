@@ -71,7 +71,8 @@ impl CommandScheduler {
     pub fn open_session(&self) -> Session {
         Session {
             id: SessionId(self.next_session.fetch_add(1, atomic::Ordering::Relaxed)),
-            scheduler: self.clone(),
+            commands: self.commands.clone(),
+            closed: self.closed.clone(),
         }
     }
 }
@@ -79,7 +80,8 @@ impl CommandScheduler {
 /// One client's upstream session; its upstream state is released on drop.
 pub struct Session {
     id: SessionId,
-    scheduler: CommandScheduler,
+    commands: mpsc::Sender<QueuedCommand>,
+    closed: mpsc::UnboundedSender<SessionId>,
 }
 
 impl Session {
@@ -90,8 +92,7 @@ impl Session {
         command: Command,
     ) -> Result<Response, ExecuteError> {
         let (reply, response) = oneshot::channel();
-        self.scheduler
-            .commands
+        self.commands
             .send(QueuedCommand {
                 priority,
                 sequence: 0,
@@ -111,7 +112,7 @@ impl Session {
 
 impl Drop for Session {
     fn drop(&mut self) {
-        let _ = self.scheduler.closed.send(self.id);
+        let _ = self.closed.send(self.id);
     }
 }
 

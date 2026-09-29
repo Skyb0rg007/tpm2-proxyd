@@ -25,8 +25,6 @@
 //! the command frame is written unchanged and the TPM's response frame
 //! (including any error response) is returned unchanged.
 
-#![allow(dead_code)] // Wired into main once daemon construction is implemented.
-
 /// Upstream transport backed by a swtpm software TPM over sockets.
 pub mod swtpm;
 
@@ -61,6 +59,12 @@ pub enum UpstreamError {
     /// The upstream worker thread is no longer running.
     #[error("upstream TPM device worker stopped")]
     WorkerStopped,
+}
+
+impl UpstreamError {
+    fn transport(error: impl Error + Send + Sync + 'static) -> Self {
+        Self::Transport(Box::new(error))
+    }
 }
 
 /// A TPM transport capable of one complete command/response transaction.
@@ -164,6 +168,10 @@ fn open_device(path: &Path, timeout: Duration) -> Result<TpmPosixDevice, TpmDevi
 }
 
 /// Serve device requests until every [`TpmDeviceUpstream`] handle is dropped.
+///
+/// A session's device is opened by its first `Transact`, so the scheduler must
+/// never forward a command for a session after closing it (it skips commands
+/// whose client has gone), or the reopened handle would never be closed.
 fn run_device_worker(path: &Path, timeout: Duration, incoming: &mpsc::Receiver<DeviceRequest>) {
     let mut devices = HashMap::new();
 
@@ -174,25 +182,7 @@ fn run_device_worker(path: &Path, timeout: Duration, incoming: &mpsc::Receiver<D
                 command,
                 reply,
             } => {
-                let device = match devices.entry(session) {
-                    Entry::Occupied(entry) => entry.into_mut(),
-                    Entry::Vacant(entry) => match open_device(path, timeout) {
-                        Ok(device) => entry.insert(device),
-                        Err(error) => {
-                            let _ = reply.send(Err(UpstreamError::Transport(Box::new(error))));
-                            continue;
-                        }
-                    },
-                };
-                let result = forward(device, &command);
-                // After a failed transaction (such as a timeout) a late response
-                // could still arrive on this handle and be mistaken for the next
-                // command's, so close it. The client's connection ends with the
-                // error anyway.
-                if result.is_err() {
-                    devices.remove(&session);
-                }
-                let _ = reply.send(result);
+                let _ = reply.send(transact(&mut devices, path, timeout, session, &command));
             }
             // Dropping the device closes its handle, and the kernel resource
             // manager flushes everything the session left loaded.
@@ -201,12 +191,36 @@ fn run_device_worker(path: &Path, timeout: Duration, incoming: &mpsc::Receiver<D
     }
 }
 
+/// Forward `command` on `session`'s device, opening the device if needed.
+fn transact(
+    devices: &mut HashMap<SessionId, TpmPosixDevice>,
+    path: &Path,
+    timeout: Duration,
+    session: SessionId,
+    command: &[u8],
+) -> Result<Vec<u8>, UpstreamError> {
+    let device = match devices.entry(session) {
+        Entry::Occupied(entry) => entry.into_mut(),
+        Entry::Vacant(entry) => {
+            entry.insert(open_device(path, timeout).map_err(UpstreamError::transport)?)
+        }
+    };
+    let result = forward(device, command);
+    // After a failed transaction (such as a timeout) a late response could
+    // still arrive on this handle and be mistaken for the next command's, so
+    // close it. The client's connection ends with the error anyway.
+    if result.is_err() {
+        devices.remove(&session);
+    }
+    result
+}
+
 /// Forward one validated command frame and return the raw response frame.
 fn forward(device: &mut impl TpmTransport, command: &[u8]) -> Result<Vec<u8>, UpstreamError> {
     let mut response = Vec::new();
     device
         .send(command)
         .and_then(|()| device.recv(&mut response))
-        .map_err(|error| UpstreamError::Transport(Box::new(error)))?;
+        .map_err(UpstreamError::transport)?;
     Ok(response)
 }
