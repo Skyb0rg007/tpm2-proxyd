@@ -63,15 +63,17 @@ expected `libtss2-tcti-proxy.so`), the systemd units, a system user, a man page,
 and an example policy at `/etc/tpm2-proxyd/policy.json`. Then:
 
 ```sh
-# Add users who may reach the proxy to the socket group (default: tss):
-sudo usermod -aG tss alice
 sudo systemctl enable --now tpm2-proxyd.socket
 ```
 
-The `tpm2-proxyd.socket` unit owns the listening socket (`0660`, group `tss`); the
-daemon starts on first connection via socket activation. Edit
-`SocketGroup=`/`SupplementaryGroups=` in the units to match your distribution's
-TPM group.
+The `tpm2-proxyd.socket` unit owns the listening socket (`tss:tss`, mode
+`0666`), and the daemon starts on first connection via socket activation. Any
+local user may connect; the policy then decides, per connection, what that peer
+may run, and peers that match no rule are denied everything. Do **not** add
+proxy users to `tss`: members of the TPM device group can open `/dev/tpmrm0`
+directly and bypass the proxy's policy. If your distribution's TPM group is not
+`tss`, edit `SupplementaryGroups=` in the service unit (and the socket's owner)
+to match.
 
 ## Configuring policy
 

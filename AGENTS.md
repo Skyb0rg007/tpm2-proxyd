@@ -130,6 +130,10 @@ systemd `.service`/`.socket` units, a sysusers file, the man page source
 (`tpm2-proxyd.8.adoc`, built with asciidoctor), `install.sh`, and
 `smoke-test.sh` (a live test against the host TPM; see `docs/smoke-test.md`).
 
+The raw socket is `tss:tss 0666`: any local user may connect, and the daemon's
+policy decides per connection. Never gate clients by the `tss` group; its
+members can open `/dev/tpmrm0` directly and bypass the policy.
+
 ## Key dependencies (and why they matter for architecture)
 
 - `tpm2-protocol` / `tpm2-device` — crates.io crates from the

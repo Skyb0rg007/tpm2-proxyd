@@ -10,10 +10,12 @@ Documentation=man:tpm2-proxyd(8)
 # Downstream TCTI clients (tss2-tcti-proxy) connect here. The daemon picks this
 # socket up via socket activation (sd_listen_fds).
 ListenStream=/run/tpm2-proxyd/tpm2-proxyd.sock
-SocketMode=0660
-SocketUser=tpm2-proxyd
-# Members of this group may reach the proxy; per-user access is then decided by
-# the daemon's policy. Change it to whichever group your TPM users belong to.
+# Every local user may connect: the daemon decides per connection, from the
+# peer's credentials and its policy, which commands (if any) it forwards.
+# Clients must not need the TPM device group (tss), whose members can open
+# /dev/tpmrm0 directly and bypass the policy.
+SocketMode=0666
+SocketUser=tss
 SocketGroup=tss
 RemoveOnStop=true
 
