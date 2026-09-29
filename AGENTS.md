@@ -29,7 +29,9 @@ the "Policy" section below.
 
 See `docs/design.md` for the architecture, the request pipeline, and the
 scheduling model (the TPM is serial, so the daemon serializes and prioritizes
-client access; commands are never preempted).
+client access; commands are never preempted). `docs/auto-encrypt.md` is an
+unimplemented proposal for transparent parameter encryption on the upstream
+bus.
 
 ## Workspace layout
 
@@ -158,6 +160,8 @@ consultation, not part of the build. It is excluded from git by
   for the daemon/IPC/connection-management design (note: D-Bus, not Varlink).
 - `references/tpm2-tss/` — the reference TSS/TCTI implementation; authoritative
   for TCTI semantics.
+- `references/linux-tpm2-space.c` — the kernel resource manager behind
+  `/dev/tpmrm0` (`drivers/char/tpm/tpm2-space.c`, from torvalds/linux master).
 - `references/tbs-design.md` — TBS-inspired policy requirements.
 - `references/tpm2-tools-workflows.{md,sh}` and
   `references/tpm2-tools-workflows.observed.md` — common tpm2-tools workflows,
