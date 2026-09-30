@@ -114,7 +114,7 @@ in the resource-manager layer (`TSS2_RESMGR_RC_LAYER`) carrying a TPM-format
 code, which tpm2-tss decodes as a TPM error the resource manager reported:
 `TPM_RC_COMMAND_CODE` for a command the profile doesn't allow, or
 `TPM_RC_HANDLE` with the handle's position for a handle it doesn't allow. The
-connection stays open.
+connection stays open, and the denial is logged with the peer's UID and PID.
 
 Connection priority is capped by the same rules. The cap is applied once when a
 client is admitted, so the effective priority remains fixed for the connection

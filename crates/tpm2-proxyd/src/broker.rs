@@ -58,11 +58,18 @@ impl Broker {
     /// Admit a peer: cap its requested priority for the connection lifetime and
     /// open its upstream session, which closes when the [`Client`] is dropped.
     pub fn admit(&self, peer: Peer, requested_priority: Priority) -> Client {
-        let priority = self
-            .policy
-            .read()
-            .unwrap()
-            .cap_priority(&peer, requested_priority);
+        let policy = self.policy.read().unwrap();
+        let priority = policy.cap_priority(&peer, requested_priority);
+        tracing::info!(
+            uid = peer.uid,
+            gid = peer.primary_gid,
+            pid = peer.pid,
+            profile = policy.profile_name(&peer),
+            requested_priority = requested_priority.0,
+            priority = priority.0,
+            "client admitted"
+        );
+        drop(policy);
         Client {
             broker: self.clone(),
             session: self.scheduler.open_session(),
@@ -96,6 +103,13 @@ impl Client {
             .unwrap()
             .authorize(&self.peer, &command);
         if let Err(denial) = authorized {
+            tracing::warn!(
+                uid = self.peer.uid,
+                pid = self.peer.pid,
+                command = %command.code(),
+                %denial,
+                "command denied"
+            );
             return Err(BrokerError::Denied {
                 command_code: command.code().value(),
                 denial,

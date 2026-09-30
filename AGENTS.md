@@ -48,7 +48,8 @@ daemon) with crates under `crates/`:
 Request flow (also drawn in `main.rs`'s module docs):
 `server` (accept, `SO_PEERCRED`/`SO_PEERGROUPS` peer identity, connection
 registry) →
-`broker` (caps priority at admission, authorizes each command against `policy`)
+`broker` (caps priority at admission, authorizes each command against `policy`,
+logs admissions and denials)
 → `scheduler` (single worker, priority-ordered, one TPM transaction at a time,
 per-client sessions) → `upstream` (the TPM).
 

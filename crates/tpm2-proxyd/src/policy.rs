@@ -225,6 +225,11 @@ impl Policy {
         }
     }
 
+    /// Name of the profile that applies to `peer`, if any.
+    pub fn profile_name(&self, peer: &Peer) -> Option<&str> {
+        self.lookup(peer).0.map(Profile::name)
+    }
+
     /// Decide whether `peer` may execute `command`.
     pub fn authorize(&self, peer: &Peer, command: &Command) -> Result<(), Denial> {
         let profile = self.lookup(peer).0.ok_or(Denial::NoProfile)?;
@@ -306,6 +311,7 @@ mod tests {
                 refusal: Refusal::Command,
             })
         );
+        assert_eq!(policy.profile_name(&Peer::new(1001, 100)), Some("random"));
     }
 
     #[test]
@@ -319,6 +325,7 @@ mod tests {
             policy.authorize(&Peer::new(1001, 100), &command(GET_RANDOM)),
             Err(Denial::NoProfile)
         );
+        assert_eq!(policy.profile_name(&Peer::new(1001, 100)), None);
     }
 
     #[test]

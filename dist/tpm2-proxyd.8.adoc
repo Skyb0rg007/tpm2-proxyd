@@ -27,7 +27,8 @@ the upstream Linux kernel resource manager, usually _/dev/tpmrm0_.
 
 Each peer gets the profile its policy names. A command the profile doesn't
 allow, or that references a handle the profile doesn't allow, isn't forwarded:
-the client gets a TPM-format error in the resource-manager layer instead.
+the client gets a TPM-format error in the resource-manager layer instead, and
+the denial is logged.
 
 It is not a resource manager: handle virtualization and context swapping are
 delegated to the kernel resource manager or *tpm2-abrmd*(8). Commands whose code

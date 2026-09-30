@@ -365,7 +365,7 @@ where
                         let response = match client.execute(command).await {
                             Ok(response) => response,
                             // The client gets an error response and may carry
-                            // on.
+                            // on; the broker has logged the denial.
                             Err(BrokerError::Denied { denial, .. }) => {
                                 Response::error(denial.response_code())
                             }

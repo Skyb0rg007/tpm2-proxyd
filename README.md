@@ -138,7 +138,8 @@ reach.
 A denied command isn't forwarded. The client gets an error response in the
 resource-manager layer, which tpm2-tools prints as, for example,
 `rmt:error(2.0): command code not supported` or `rmt:handle(1):the handle is not
-correct for the use`, and the connection stays open.
+correct for the use`, and the connection stays open. Denials are logged with the
+peer's UID and PID.
 
 Reload the policy and profiles after editing, without dropping connections:
 
