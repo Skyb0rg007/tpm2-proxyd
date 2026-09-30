@@ -6,6 +6,16 @@ SPDX-License-Identifier: Apache-2.0
 
 # Command Policy
 
+> **Status:** The first release doesn't implement the state model below. Each
+> client now has its own `/dev/tpmrm0` handle, so the kernel resource manager
+> already confines transient objects and sessions to the connection that created
+> them and flushes them when it closes. The release uses stateless profiles
+> instead (see "Access policy" in [design.md](design.md)): the shipped `standard`
+> profile allows the workflow commands listed at the end of this document, with
+> handles limited to transient objects, sessions and the null hierarchy (plus the
+> owner and endorsement hierarchies for `CreatePrimary`). The per-identity
+> provenance and parameter checks below remain candidates for later releases.
+
 This document describes the first-release command policy shape for
 `tpm2-proxyd`. The release target is intentionally narrow: support
 unprivileged workflows that are analogous to what can be done through Windows
