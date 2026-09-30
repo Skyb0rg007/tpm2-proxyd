@@ -41,6 +41,9 @@ rustPlatform.buildRustPackage (finalAttrs: {
     install -Dm0644 dist/tpm2-proxyd.sysusers \
       "$out/lib/sysusers.d/tpm2-proxyd.conf"
     installManPage tpm2-proxyd.8
+    install -Dm0644 dist/policy.example.json \
+      "$out/share/tpm2-proxyd/policy.json"
+    install -Dm0644 -t "$out/share/tpm2-proxyd/profiles" dist/profiles/*.json
   '';
 
   meta = {

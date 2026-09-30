@@ -46,9 +46,11 @@ daemon="$here/target/release/tpm2-proxyd"
 workdir="$(mktemp -d)"
 sock="$workdir/tpm2-proxyd.sock"
 policy="$workdir/policy.json"
-# Allow this user every command (empty command list = all), high priority.
-printf '{"command_rules":[{"subject":{"uid":%s},"decision":"allow"}],"priority_rules":[{"subject":{"uid":%s},"max_priority":100}]}\n' \
-  "$(id -u)" "$(id -u)" >"$policy"
+# Give this user the shipped standard profile, at a high priority.
+printf '{"rules":[{"subject":{"uid":%s},"profile":"standard","max_priority":100}]}\n' \
+  "$(id -u)" >"$policy"
+mkdir "$workdir/profiles"
+cp "$here/dist/profiles/standard.json" "$workdir/profiles/"
 
 swtpm_pid=""
 daemon_pid=""
@@ -103,4 +105,30 @@ if [ "${#out}" -ne 16 ]; then
   exit 1
 fi
 
-echo "PASS ($MODE): proxied TPM2_GetRandom returned $out"
+tcti="$tcti_lib:$sock"
+work="$workdir/keys"
+mkdir "$work"
+
+echo "Creating, loading, and signing with a key under the standard profile..."
+{
+  tpm2_createprimary --tcti="$tcti" -C o -c "$work/primary.ctx" &&
+    tpm2_create --tcti="$tcti" -C "$work/primary.ctx" -G ecc \
+      -u "$work/key.pub" -r "$work/key.priv" &&
+    tpm2_load --tcti="$tcti" -C "$work/primary.ctx" \
+      -u "$work/key.pub" -r "$work/key.priv" -c "$work/key.ctx" &&
+    echo "tpm2-proxyd" >"$work/message" &&
+    tpm2_sign --tcti="$tcti" -c "$work/key.ctx" -g sha256 \
+      -o "$work/message.sig" "$work/message"
+} >/dev/null 2>"$workdir/err" || {
+  echo "FAIL: key workflow through proxy failed:" >&2
+  cat "$workdir/err" >&2
+  exit 1
+}
+
+echo "Checking that the standard profile refuses a persistent handle..."
+if tpm2_readpublic --tcti="$tcti" -c 0x81000001 >/dev/null 2>"$workdir/err"; then
+  echo "FAIL: reading persistent handle 0x81000001 was not refused" >&2
+  exit 1
+fi
+
+echo "PASS ($MODE): proxied TPM2_GetRandom returned $out; key workflow ran; persistent handle refused"

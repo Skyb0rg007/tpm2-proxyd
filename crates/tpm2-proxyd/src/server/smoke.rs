@@ -19,7 +19,7 @@ use tokio::net::UnixStream;
 use tokio::sync::watch;
 
 use crate::broker::Broker;
-use crate::policy::{CommandRule, Decision, Policy, PolicyConfig, Subject};
+use crate::policy::Policy;
 use crate::scheduler::CommandScheduler;
 use crate::server::connection::{HELLO_TIMEOUT, serve_listener};
 use crate::server::registry::ConnectionRegistry;
@@ -139,19 +139,13 @@ async fn read_packet(stream: &mut UnixStream) -> Option<Vec<u8>> {
 /// Policy allowing only `GetRandom` and `GetTestResult` for any peer, at
 /// priorities up to [`MAX_PRIORITY`].
 fn policy() -> Policy {
-    Policy::new(PolicyConfig {
-        default_decision: Decision::Deny,
-        default_max_priority: MAX_PRIORITY,
-        command_rules: vec![CommandRule {
-            subject: Subject::default(),
-            commands: vec![
-                tpm2_protocol::data::TpmCc::GetRandom,
-                tpm2_protocol::data::TpmCc::GetTestResult,
-            ],
-            decision: Decision::Allow,
-        }],
-        priority_rules: Vec::new(),
-    })
+    Policy::from_json(
+        &format!(r#"{{"default_profile": "test", "default_max_priority": {MAX_PRIORITY}}}"#),
+        &[(
+            "test",
+            r#"{"commands": ["TPM_CC_GetRandom", "TPM_CC_GetTestResult"]}"#,
+        )],
+    )
 }
 
 struct Harness {

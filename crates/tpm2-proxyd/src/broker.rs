@@ -17,7 +17,7 @@ use std::sync::{
 };
 
 use crate::{
-    policy::{Decision, Policy},
+    policy::{Denial, Policy},
     scheduler::{CommandScheduler, ExecuteError, Priority, Session},
     server::peer::Peer,
     tpm::{Command, Response},
@@ -89,15 +89,17 @@ impl Client {
 
     /// Authorize and execute one parsed TPM command.
     pub async fn execute(&self, command: Command) -> Result<Response, BrokerError> {
-        let code = command.code().value();
-        let decision = self
+        let authorized = self
             .broker
             .policy
             .read()
             .unwrap()
             .authorize(&self.peer, &command);
-        if decision == Decision::Deny {
-            return Err(BrokerError::Denied { command_code: code });
+        if let Err(denial) = authorized {
+            return Err(BrokerError::Denied {
+                command_code: command.code().value(),
+                denial,
+            });
         }
 
         self.session
@@ -111,10 +113,12 @@ impl Client {
 #[derive(Debug, thiserror::Error)]
 pub enum BrokerError {
     /// Policy denied this command.
-    #[error("policy denied TPM command {command_code:#010x}")]
+    #[error("policy denied TPM command {command_code:#010x}: {denial}")]
     Denied {
         /// Denied TPM command code.
         command_code: u32,
+        /// Why.
+        denial: Denial,
     },
     /// Scheduler or upstream failure.
     #[error(transparent)]
@@ -129,7 +133,6 @@ mod tests {
     };
 
     use crate::{
-        policy::{CommandRule, PolicyConfig, PriorityRule, Subject},
         tpm::DEFAULT_MAX_PACKET_SIZE,
         upstream::{SessionId, Upstream, UpstreamError},
     };
@@ -174,13 +177,14 @@ mod tests {
             },
             4,
         );
-        let broker = Broker::new(Policy::new(PolicyConfig::default()), scheduler);
+        let broker = Broker::new(Policy::from_json("{}", &[]), scheduler);
         let client = broker.admit(Peer::new(1000, 100), Priority(10));
 
         assert!(matches!(
             client.execute(command(0x17b)).await,
             Err(BrokerError::Denied {
-                command_code: 0x17b
+                command_code: 0x17b,
+                denial: Denial::NoProfile,
             })
         ));
         assert_eq!(count.load(Ordering::Relaxed), 0);
@@ -196,7 +200,7 @@ mod tests {
             },
             4,
         );
-        let broker = Broker::new(Policy::new(PolicyConfig::default()), scheduler);
+        let broker = Broker::new(Policy::from_json("{}", &[]), scheduler);
         let client = broker.admit(Peer::new(1000, 100), Priority(0));
 
         assert!(client.execute(command(0x17b)).await.is_err());
@@ -214,21 +218,10 @@ mod tests {
             },
             4,
         );
-        let policy = Policy::new(PolicyConfig {
-            command_rules: vec![CommandRule {
-                subject: Subject::default(),
-                commands: Vec::new(),
-                decision: Decision::Allow,
-            }],
-            priority_rules: vec![PriorityRule {
-                subject: Subject {
-                    uid: Some(1000),
-                    gid: None,
-                },
-                max_priority: 3,
-            }],
-            ..PolicyConfig::default()
-        });
+        let policy = Policy::from_json(
+            r#"{"rules": [{"subject": {"uid": 1000}, "profile": "all", "max_priority": 3}]}"#,
+            &[("all", r#"{"commands": ["*"]}"#)],
+        );
         let broker = Broker::new(policy, scheduler);
 
         assert_eq!(

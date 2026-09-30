@@ -25,6 +25,10 @@ raw TPM command/response byte stream. The daemon inspects each command, checks i
 policy, schedules access to the serial TPM, and forwards permitted commands to
 the upstream Linux kernel resource manager, usually _/dev/tpmrm0_.
 
+Each peer gets the profile its policy names. A command the profile doesn't
+allow, or that references a handle the profile doesn't allow, isn't
+forwarded, and the connection is closed.
+
 It is not a resource manager: handle virtualization and context swapping are
 delegated to the kernel resource manager or *tpm2-abrmd*(8). Commands whose code
 is not a recognized TPM 2.0 command code, including vendor-specific codes, are
@@ -50,7 +54,8 @@ for the connection's lifetime:
 == Options
 
 *--config*=_PATH_::
-Policy configuration file. The default is _/etc/tpm2-proxyd/policy.json_.
+Policy file. The default is _/etc/tpm2-proxyd/policy.json_. Profiles are read
+from the _profiles_ directory beside it.
 
 *--socket*=_PATH_::
 Unix socket clients connect to. The default is
@@ -90,7 +95,8 @@ Hard per-command timeout. The default is 120 seconds.
 Stop accepting connections, drain in-flight commands, and exit.
 
 *SIGHUP*::
-Reload the policy file and atomically replace the active policy.
+Reload the policy file and its profiles and atomically replace the active
+policy. If any of them fails to load, the old policy stays in effect.
 
 == Environment
 
@@ -103,7 +109,11 @@ Consumed for systemd readiness, watchdog, and socket activation.
 == Files
 
 _/etc/tpm2-proxyd/policy.json_::
-Per-user/group access policy.
+Which profile and priority cap each user or group gets.
+
+_/etc/tpm2-proxyd/profiles/_NAME_.json_::
+The profile _NAME_: the TPM commands it allows and the handles they may
+reference. The *standard* profile is installed with the service.
 
 == See Also
 

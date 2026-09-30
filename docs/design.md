@@ -78,30 +78,58 @@ Once a connection's hello is accepted, each TPM command flows through:
 - `server` owns the socket: it accepts connections, runs the hello, and then
   runs the per-connection TPM stream. Peer identity comes from `SO_PEERCRED` and `SO_PEERGROUPS`.
 - `broker` runs the per-command pipeline and owns shared state.
-- `policy` answers allow/deny for a `(peer, command)` and bounds the priority a
-  peer may request.
+- `policy` answers allow/deny for a `(peer, command)` through the peer's
+  profile and bounds the priority a peer may request.
 - `scheduler` decides *when* an allowed command may run, honoring the
   connection's requested priority (see below).
 - `upstream` is the single, serialized transport to the physical TPM.
 
 ### Access policy
 
-The initial policy engine is implemented as ordered, first-match rules. Rules
-can select a UID, a primary or supplementary GID, and one or more TPM command
-codes; an empty command-code list matches every command. The policy defaults to
-deny when no command rule matches.
+The policy file assigns each peer a **profile** and a priority cap by ordered,
+first-match rules that select a UID, a primary or supplementary GID, both, or
+every peer. A peer that matches no rule gets the default profile, or no access
+if there isn't one.
 
-Longer term, permissions will be determined and granted through Polkit. Local
-rules remain useful as the daemon's compiled enforcement model, but the
-authority for granting access is Polkit policy and authorization.
+A profile is a JSON file in the profiles directory beside the policy file; none
+are built into the daemon, and the `standard` profile is installed with the
+service. A profile lists the commands it allows and the handles those commands
+may reference in their handle area, by handle type (`TPM_HT_*`) or specific
+permanent handle (`TPM_RH_*`), optionally per command. The authorization area
+isn't checked.
 
-Connection priority is bounded separately by ordered UID/GID cap rules. The cap
-is applied once when a client is admitted, so the effective priority remains
-fixed for the connection lifetime. The active policy can be atomically replaced;
-subsequent commands use the replacement policy, while already admitted
-connections retain their previously capped priority.
+This handle check is enough because each client has its own `/dev/tpmrm0`
+handle. The kernel resource manager gives every handle its own space of
+transient objects and sessions, so a client can't name another client's objects
+or sessions, and it flushes them when the client disconnects. What the kernel
+doesn't isolate is state all users share: persistent handles, NV indices,
+hierarchy authorization and settings, PCR values, the clock, and the
+dictionary-attack lockout. A profile keeps users away from that state by not
+allowing the commands that change it and the handles that name it. The
+`standard` profile allows only transient objects, sessions and the null
+hierarchy, plus the owner and endorsement hierarchies for `CreatePrimary`.
 
-Handle-specific command rules remain future work.
+A denied command isn't forwarded, and the proxy closes the connection.
+
+Connection priority is capped by the same rules. The cap is applied once when a
+client is admitted, so the effective priority remains fixed for the connection
+lifetime. `SIGHUP` reloads the policy and its profiles together and swaps them in
+atomically; if any file fails to load, the old policy stays. Subsequent commands
+use the replacement policy, while already admitted connections retain their
+previously capped priority.
+
+Longer term, permissions may be determined and granted through Polkit, with
+profiles remaining the daemon's enforcement model.
+
+Known limitations of the profile model:
+
+- **Dictionary-attack lockout is shared.** A user who repeatedly fails
+  authorization for their own DA-protected object pushes the whole TPM into
+  lockout. Refusing to create or load objects without `noDA` would close it,
+  but that needs template inspection.
+- **Saved contexts are possession-based.** A context file saved by one user can
+  be loaded by another who obtains it, although using the object still needs
+  its authorization.
 
 ### Recognized commands only
 

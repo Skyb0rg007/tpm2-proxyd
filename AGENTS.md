@@ -75,22 +75,28 @@ per-client sessions) → `upstream` (the TPM).
   objects pile up and exhaust the kernel RM's 3-objects-per-fd limit. The swtpm
   upstream can't isolate sessions and ignores them.
 - `systemd` provides socket activation, `sd_notify` readiness, and watchdog.
-  `SIGHUP` re-reads the policy file and swaps it in atomically.
+  `SIGHUP` re-reads the policy file and its profiles and swaps them in
+  atomically.
 
 ### Policy
 
-- **Current:** a small JSON format, the serde form of `PolicyConfig`
-  (`policy.rs`, example `dist/policy.example.json`). Command rules match a UID,
-  a GID, both, or everyone, plus a list of command codes (empty = all), and
-  allow or deny first-match-wins, falling back to `default_decision`. Priority
-  rules cap each connection's priority at admission. Keep this one schema;
-  don't reintroduce a separate on-disk model that compiles into it.
-- **Planned:** `docs/command-policy.md` (first-release scope: TBS-equivalent
-  unprivileged workflows with in-memory ownership tracking),
-  `docs/policy-language.md` (declarative, default-deny YAML policy language),
-  and `dist/policy.safe-limited.yaml` (an example in that language). Supporting
-  analysis is in `docs/unprivileged-command-policy.md` and
-  `docs/tpm2-protocol-commands.md`.
+- **Current:** `policy.json` (`policy.rs`, example
+  `dist/policy.example.json`) gives each peer a profile name and a priority cap
+  through first-match rules on UID/GID, with `default_profile` and
+  `default_max_priority` as the fallback. A profile (`profile.rs`) is
+  `profiles/<name>.json` beside the policy file: allowed commands plus the
+  handles they may reference in their handle area, by `TPM_HT_*` type or
+  `TPM_RH_*` handle, optionally per command, all named as the spec spells them.
+  **No profiles are built into the binary**; `dist/profiles/standard.json` is
+  installed with the service. Keep it that way.
+- The handle check relies on the per-client `/dev/tpmrm0` fd: the kernel RM
+  already isolates transient objects and sessions, so profiles only need to
+  keep users away from shared state (persistent handles, NV, hierarchies, PCRs,
+  clock, DA). Don't add in-memory ownership tracking for transient handles.
+- **Planned:** `docs/policy-language.md` (declarative, default-deny YAML policy
+  language) and `dist/policy.safe-limited.yaml` (an example in it). Supporting
+  analysis is in `docs/command-policy.md`, `docs/unprivileged-command-policy.md`
+  and `docs/tpm2-protocol-commands.md`.
 
 ### The TCTI module (`crates/tcti/src/lib.rs`)
 
@@ -119,8 +125,11 @@ load by name (`--tcti=proxy:<sockpath>`); a full path works regardless.
 ### Packaging (`dist/`)
 
 systemd `.service`/`.socket` units, a sysusers file, the man page source
-(`tpm2-proxyd.8.adoc`, built with asciidoctor), `install.sh`, and
-`smoke-test.sh` (a live test against the host TPM; see `docs/smoke-test.md`).
+(`tpm2-proxyd.8.adoc`, built with asciidoctor), the default policy
+(`policy.example.json`, installed as `/etc/tpm2-proxyd/policy.json`) and
+profiles (`profiles/`, installed to `/etc/tpm2-proxyd/profiles/`), `install.sh`,
+and `smoke-test.sh` (a live test against the host TPM that runs a key workflow
+under the `standard` profile; see `docs/smoke-test.md`).
 
 The raw socket is `tss:tss 0666`: any local user may connect, and the daemon's
 policy decides per connection. Never gate clients by the `tss` group; its

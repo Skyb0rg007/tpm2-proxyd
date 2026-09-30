@@ -1,0 +1,52 @@
+{
+  "handles": [
+    "TPM_HT_TRANSIENT",
+    "TPM_HT_HMAC_SESSION",
+    "TPM_HT_POLICY_SESSION",
+    "TPM_RH_NULL"
+  ],
+  "commands": [
+    "TPM_CC_GetCapability",
+    "TPM_CC_GetRandom",
+    "TPM_CC_GetTestResult",
+    "TPM_CC_ReadClock",
+    "TPM_CC_TestParms",
+    "TPM_CC_PCR_Read",
+
+    "TPM_CC_StartAuthSession",
+    "TPM_CC_PolicyAuthValue",
+    "TPM_CC_PolicyCommandCode",
+    "TPM_CC_PolicyGetDigest",
+    "TPM_CC_PolicyOR",
+    "TPM_CC_PolicyPassword",
+    "TPM_CC_PolicyPCR",
+    "TPM_CC_PolicyRestart",
+
+    "TPM_CC_CreatePrimary",
+    "TPM_CC_Create",
+    "TPM_CC_Load",
+    "TPM_CC_LoadExternal",
+    "TPM_CC_ReadPublic",
+    "TPM_CC_ContextSave",
+    "TPM_CC_ContextLoad",
+    "TPM_CC_FlushContext",
+
+    "TPM_CC_Hash",
+    "TPM_CC_HashSequenceStart",
+    "TPM_CC_SequenceUpdate",
+    "TPM_CC_SequenceComplete",
+    "TPM_CC_HMAC",
+    "TPM_CC_Sign",
+    "TPM_CC_VerifySignature",
+    "TPM_CC_RSA_Encrypt",
+    "TPM_CC_RSA_Decrypt",
+    "TPM_CC_EncryptDecrypt",
+    "TPM_CC_EncryptDecrypt2",
+    "TPM_CC_Unseal",
+    "TPM_CC_Certify",
+    "TPM_CC_Quote"
+  ],
+  "command_handles": {
+    "TPM_CC_CreatePrimary": ["TPM_RH_OWNER", "TPM_RH_ENDORSEMENT", "TPM_RH_NULL"]
+  }
+}

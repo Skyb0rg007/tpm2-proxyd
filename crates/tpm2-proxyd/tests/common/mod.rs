@@ -27,6 +27,8 @@ use rustix::process::{Signal, getuid, set_parent_process_death_signal};
 
 /// TPM command tag with no authorization sessions (`TPM_ST_NO_SESSIONS`).
 pub const NO_SESSIONS: u16 = 0x8001;
+/// TPM command tag with authorization sessions (`TPM_ST_SESSIONS`).
+pub const SESSIONS: u16 = 0x8002;
 /// `TPM_RC_SUCCESS`.
 pub const TPM_RC_SUCCESS: u32 = 0x0000;
 /// `TPM_RC_INITIALIZE` — returned when the TPM is (already) started.
@@ -44,6 +46,7 @@ pub mod cc {
     pub const READ_CLOCK: u32 = 0x0000_0181;
     pub const PCR_READ: u32 = 0x0000_017e;
     pub const READ_PUBLIC: u32 = 0x0000_0173;
+    pub const CLEAR: u32 = 0x0000_0126;
 }
 
 /// `TPM_CAP` values for `GetCapability`.
@@ -89,6 +92,15 @@ pub fn startup_clear() -> Vec<u8> {
 pub fn read_public(handle: u32) -> Vec<u8> {
     frame(NO_SESSIONS, cc::READ_PUBLIC, &handle.to_be_bytes())
 }
+/// `TPM2_Clear` authorized by the lockout hierarchy with an empty password.
+pub fn clear() -> Vec<u8> {
+    let mut body = Vec::from(0x4000_000au32.to_be_bytes()); // TPM_RH_LOCKOUT
+    // Authorization area: one empty password session (TPM_RS_PW).
+    body.extend_from_slice(&9u32.to_be_bytes());
+    body.extend_from_slice(&0x4000_0009u32.to_be_bytes());
+    body.extend_from_slice(&[0, 0, 0, 0, 0]);
+    frame(SESSIONS, cc::CLEAR, &body)
+}
 pub fn get_capability(capability: u32, property: u32, count: u32) -> Vec<u8> {
     let mut body = Vec::with_capacity(12);
     body.extend_from_slice(&capability.to_be_bytes());
@@ -127,21 +139,14 @@ pub fn current_uid() -> u32 {
     getuid().as_raw()
 }
 
-/// A policy allowing the current user every command.
-pub fn allow_all_policy() -> String {
-    format!(
-        r#"{{"command_rules":[{{"subject":{{"uid":{0}}},"decision":"allow"}}],"priority_rules":[{{"subject":{{"uid":{0}}},"max_priority":100}}]}}"#,
-        current_uid()
-    )
-}
+/// A profile allowing every command with any handles.
+pub const ALL_PROFILE: (&str, &str) = ("all", r#"{"commands": ["*"], "handles": ["*"]}"#);
 
-/// A policy allowing the current user only `commands` (everything else denied).
-pub fn allow_only_policy(commands: &[u32]) -> String {
-    let list: Vec<String> = commands.iter().map(u32::to_string).collect();
+/// A policy giving the current user `profile`, at priorities up to 100.
+pub fn policy_for_current_user(profile: &str) -> String {
     format!(
-        r#"{{"command_rules":[{{"subject":{{"uid":{0}}},"commands":[{1}],"decision":"allow"}}],"priority_rules":[{{"subject":{{"uid":{0}}},"max_priority":100}}]}}"#,
-        current_uid(),
-        list.join(",")
+        r#"{{"rules": [{{"subject": {{"uid": {}}}, "profile": "{profile}", "max_priority": 100}}]}}"#,
+        current_uid()
     )
 }
 
@@ -156,8 +161,9 @@ pub struct TestEnv {
 }
 
 impl TestEnv {
-    /// Start a fresh swtpm and proxy enforcing `policy_json`.
-    pub fn start(policy_json: &str) -> Self {
+    /// Start a fresh swtpm and proxy enforcing `policy_json`, with `profiles`
+    /// given as `(name, JSON)` pairs.
+    pub fn start(policy_json: &str, profiles: &[(&str, &str)]) -> Self {
         let unique = format!(
             "{}-{}",
             std::process::id(),
@@ -172,6 +178,10 @@ impl TestEnv {
         let socket = dir.join("proxy.sock");
         let policy = dir.join("policy.json");
         std::fs::write(&policy, policy_json).expect("write policy");
+        std::fs::create_dir(dir.join("profiles")).expect("create profiles dir");
+        for (name, json) in profiles {
+            std::fs::write(dir.join(format!("profiles/{name}.json")), json).expect("write profile");
+        }
 
         let swtpm_log = dir.join("swtpm.log");
         let swtpm = spawn(
@@ -226,7 +236,7 @@ impl TestEnv {
 
     /// Start with an allow-all policy for the current user.
     pub fn start_allow_all() -> Self {
-        Self::start(&allow_all_policy())
+        Self::start(&policy_for_current_user("all"), &[ALL_PROFILE])
     }
 
     /// The proxy's socket path.

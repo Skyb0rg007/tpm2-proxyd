@@ -1,20 +1,5 @@
 {
-  "default_decision": "deny",
+  "default_profile": "standard",
   "default_max_priority": 0,
-  "command_rules": [
-    {
-      "subject": { "uid": 1000 },
-      "commands": [379, 378],
-      "decision": "allow"
-    },
-    {
-      "subject": { "gid": 1001 },
-      "commands": [],
-      "decision": "allow"
-    }
-  ],
-  "priority_rules": [
-    { "subject": { "uid": 1000 }, "max_priority": 5 },
-    { "subject": { "gid": 1001 }, "max_priority": 1 }
-  ]
+  "rules": []
 }

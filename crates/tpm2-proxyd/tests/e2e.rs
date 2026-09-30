@@ -17,7 +17,7 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 
 use tss2_tcti_proxy::abi::{TSS2_RC_SUCCESS, TctiContext, TctiContextCommonV2};
 
-use common::{cap, cc};
+use common::cap;
 
 /// A representative spread of no-authorization commands should all succeed once
 /// the proxy has started the TPM.
@@ -106,7 +106,10 @@ fn relays_tpm_error_responses() {
 /// connection without forwarding them to the TPM.
 #[test]
 fn policy_blocks_disallowed_commands() {
-    let env = common::TestEnv::start(&common::allow_only_policy(&[cc::GET_RANDOM]));
+    let env = common::TestEnv::start(
+        &common::policy_for_current_user("random"),
+        &[("random", r#"{"commands": ["TPM_CC_GetRandom"]}"#)],
+    );
 
     // The allowed command works.
     let mut allowed = env.connect();
@@ -127,6 +130,41 @@ fn policy_blocks_disallowed_commands() {
     // A fresh connection can still run allowed commands afterwards.
     let mut again = env.connect();
     assert!(again.transact(&common::get_random(8)).is_some());
+}
+
+/// The `standard` profile shipped in `dist/profiles` loads, allows ordinary
+/// commands, and refuses commands that change shared TPM state or touch
+/// handles outside the caller's connection.
+#[test]
+fn shipped_standard_profile() {
+    let standard = std::fs::read_to_string(concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/../../dist/profiles/standard.json"
+    ))
+    .expect("read the shipped standard profile");
+    let env = common::TestEnv::start(
+        &common::policy_for_current_user("standard"),
+        &[("standard", &standard)],
+    );
+
+    let mut client = env.connect();
+    let response = client.transact(&common::get_random(8)).unwrap();
+    assert!(common::is_success(&response));
+    let response = client
+        .transact(&common::get_capability(cap::TPM_PROPERTIES, 0x100, 1))
+        .unwrap();
+    assert!(common::is_success(&response));
+
+    // TPM2_Clear, authorized by the lockout hierarchy: not in the profile.
+    assert!(env.connect().transact(&common::clear()).is_none());
+
+    // TPM2_ReadPublic of a persistent handle: an allowed command, but the
+    // profile doesn't allow persistent handles.
+    assert!(
+        env.connect()
+            .transact(&common::read_public(0x8100_0001))
+            .is_none()
+    );
 }
 
 /// Unrecognized command codes are rejected at the proxy's parse boundary and

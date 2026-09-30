@@ -26,10 +26,12 @@ pub const HEADER_SIZE: usize = 10;
 /// Conservative default bound for packets accepted from either direction.
 pub const DEFAULT_MAX_PACKET_SIZE: usize = 1024 * 1024;
 
-/// Validated TPM command bytes and their parsed command code.
+/// Validated TPM command bytes, their parsed command code, and the handles in
+/// their handle area.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Command {
     code: TpmCc,
+    handles: Vec<u32>,
     bytes: Vec<u8>,
 }
 
@@ -53,8 +55,17 @@ impl Command {
         }
         validate_command_tag(&bytes)?;
         let frame = WireCommand::cast(&bytes)?;
+        let code = frame.cc()?;
+        let handles = frame
+            .handles()?
+            .as_chunks::<4>()
+            .0
+            .iter()
+            .map(|&handle| u32::from_be_bytes(handle))
+            .collect();
         Ok(Self {
-            code: frame.cc()?,
+            code,
+            handles,
             bytes,
         })
     }
@@ -62,6 +73,12 @@ impl Command {
     /// Parsed TPM command code.
     pub fn code(&self) -> TpmCc {
         self.code
+    }
+
+    /// Handles in the command's handle area, in order. Session handles in the
+    /// authorization area aren't included.
+    pub fn handles(&self) -> &[u32] {
+        &self.handles
     }
 
     /// Return whether this packet carries `code`.
@@ -221,6 +238,24 @@ mod tests {
         let command = Command::parse(command(0x17b, &[0, 8]), 4096).unwrap();
         assert_eq!(command.code(), TpmCc::GetRandom);
         assert!(command.is_code(TpmCc::GetRandom));
+    }
+
+    #[test]
+    fn parses_the_handle_area() {
+        // TPM2_ReadPublic takes one handle.
+        let read_public = Command::parse(command(0x173, &0x8000_0001u32.to_be_bytes()), 4096);
+        assert_eq!(read_public.unwrap().handles(), [0x8000_0001]);
+
+        let get_random = Command::parse(command(0x17b, &[0, 8]), 4096).unwrap();
+        assert!(get_random.handles().is_empty());
+    }
+
+    #[test]
+    fn rejects_a_truncated_handle_area() {
+        assert!(matches!(
+            Command::parse(command(0x173, &[0x80, 0]), 4096),
+            Err(ParseError::Protocol(_))
+        ));
     }
 
     #[test]

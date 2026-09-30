@@ -53,6 +53,16 @@ else
   echo "Keeping existing policy at /etc/tpm2-proxyd/policy.json."
 fi
 
+# Install the shipped profiles, keeping any the administrator has edited.
+for profile in "$here"/dist/profiles/*.json; do
+  target="$DESTDIR/etc/tpm2-proxyd/profiles/$(basename "$profile")"
+  if [ ! -e "$target" ]; then
+    install -Dm0644 "$profile" "$target"
+  else
+    echo "Keeping existing profile at ${target#"$DESTDIR"}."
+  fi
+done
+
 if [ -z "$DESTDIR" ]; then
   echo "Creating system user and reloading systemd..."
   systemd-sysusers /usr/lib/sysusers.d/tpm2-proxyd.conf

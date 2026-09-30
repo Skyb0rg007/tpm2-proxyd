@@ -60,7 +60,9 @@ sudo ./dist/install.sh
 
 The script installs the daemon, the TCTI module (renamed to the loader's
 expected `libtss2-tcti-proxy.so`), the systemd units, a system user, a man page,
-and an example policy at `/etc/tpm2-proxyd/policy.json`. Then:
+a policy at `/etc/tpm2-proxyd/policy.json` that gives every user the `standard`
+profile, and that profile at `/etc/tpm2-proxyd/profiles/standard.json`. It
+doesn't overwrite a policy or profile that's already there. Then:
 
 ```sh
 sudo systemctl enable --now tpm2-proxyd.socket
@@ -69,9 +71,8 @@ sudo systemctl enable --now tpm2-proxyd.socket
 The `tpm2-proxyd.socket` unit owns the listening socket (`tss:tss`, mode
 `0666`), and the daemon starts on first connection via socket activation. Any
 local user may connect; the policy then decides, per connection, what that peer
-may run, and peers that match no rule are denied everything. One user may hold
-at most 16 connections at once (`--max-connections-per-uid`), so no one user can
-take every slot. Do **not** add
+may run. One user may hold at most 16 connections at once
+(`--max-connections-per-uid`), so no one user can take every slot. Do **not** add
 proxy users to `tss`: members of the TPM device group can open `/dev/tpmrm0`
 directly and bypass the proxy's policy. If your distribution's TPM group is not
 `tss`, edit `SupplementaryGroups=` in the service unit (and the socket's owner)
@@ -79,31 +80,64 @@ to match.
 
 ## Configuring policy
 
-Policy is a JSON file (default `/etc/tpm2-proxyd/policy.json`) with two ordered
-rule lists. Each rule's `subject` matches a `uid`, a `gid` (primary or
-supplementary), both, or, if empty, every peer.
+Policy has two parts, both under `/etc/tpm2-proxyd/`:
 
-- `command_rules` allow or deny TPM command codes (decimal `TPM_CC` values; an
-  empty or omitted list means *all* commands). The first matching rule wins;
-  otherwise `default_decision` applies (default **deny**).
-- `priority_rules` cap the scheduling priority a peer may receive. The first
-  matching rule wins; otherwise `default_max_priority` applies (default `0`).
+- **Profiles** (`profiles/<name>.json`) say which TPM commands may run and which
+  handles those commands may reference. Nothing is built into the daemon; it
+  ships one profile, `standard`, which is also the default.
+- **The policy** (`policy.json`) says which profile and priority cap each peer
+  gets.
 
 ```json
 {
-  "command_rules": [
-    { "subject": { "uid": 1000 }, "commands": [379, 378], "decision": "allow" },
-    { "subject": { "gid": 1001 }, "decision": "allow" }
-  ],
-  "priority_rules": [
-    { "subject": { "uid": 1000 }, "max_priority": 5 },
-    { "subject": { "gid": 1001 }, "max_priority": 1 }
+  "default_profile": "standard",
+  "default_max_priority": 0,
+  "rules": [
+    { "subject": { "gid": 1001 }, "profile": "admin", "max_priority": 10 },
+    { "subject": { "uid": 1005 }, "profile": "none" }
   ]
 }
 ```
 
-`379`/`378` are `TPM_CC_GetRandom` / `TPM_CC_GetCapability`. Reload after editing
-without dropping connections:
+Rules are checked in order and the first whose `subject` matches wins. A subject
+names a `uid`, a `gid` (primary or supplementary), both, or, if empty, every
+peer. A peer no rule matches gets `default_profile`, or no access at all if it's
+unset. A rule without `max_priority` uses `default_max_priority` (default `0`).
+Loading fails if the policy names a profile that doesn't exist, so the example
+above also needs `admin.json` and `none.json`.
+
+A profile lists commands and handles by their TPM specification names:
+
+```json
+{
+  "handles": ["TPM_HT_TRANSIENT", "TPM_HT_HMAC_SESSION", "TPM_HT_POLICY_SESSION", "TPM_RH_NULL"],
+  "commands": ["TPM_CC_GetRandom", "TPM_CC_CreatePrimary", "TPM_CC_Sign"],
+  "command_handles": {
+    "TPM_CC_CreatePrimary": ["TPM_RH_OWNER", "TPM_RH_NULL"]
+  }
+}
+```
+
+- `commands` lists the commands the profile allows; `"*"` allows every command
+  the proxy recognizes. `{"commands": []}` allows nothing.
+- `handles` lists the handles any allowed command may reference in its handle
+  area: a handle type (`TPM_HT_*`) allows every handle of that type, a permanent
+  handle (`TPM_RH_*`) allows just itself, and `"*"` allows any handle.
+- `command_handles` replaces `handles` for particular commands.
+
+The shipped `standard` profile covers ordinary unprivileged use: capability, PCR
+and random reads; sessions; creating, loading and using the caller's own keys
+and sealed objects; hashing, signing, encryption and quotes. It allows only
+transient objects, sessions and the null hierarchy, plus the owner and
+endorsement hierarchies for `CreatePrimary`, so it can't touch persistent keys,
+NV indices, PCR values or hierarchy settings, all of which every user shares.
+Each connection gets its own `/dev/tpmrm0` handle, so the kernel resource
+manager keeps one client's transient objects and sessions out of another's
+reach.
+
+A denied command isn't forwarded, and the proxy closes the connection.
+
+Reload the policy and profiles after editing, without dropping connections:
 
 ```sh
 sudo systemctl reload tpm2-proxyd      # or: kill -HUP <pid>

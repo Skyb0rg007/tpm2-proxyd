@@ -394,7 +394,7 @@ mod tests {
 
     use crate::{
         broker::Broker,
-        policy::{Policy, PolicyConfig},
+        policy::Policy,
         scheduler::CommandScheduler,
         tpm::{DEFAULT_MAX_PACKET_SIZE, HEADER_SIZE},
         upstream::{SessionId, Upstream, UpstreamError},
@@ -485,7 +485,7 @@ mod tests {
             },
             8,
         );
-        let broker = Broker::new(Policy::new(PolicyConfig::default()), scheduler);
+        let broker = Broker::new(Policy::from_json("{}", &[]), scheduler);
         let client_context = broker.admit(Peer::new(1000, 100), Priority(4));
         let (mut client, server) = tokio::io::duplex(256);
         let (_shutdown_tx, shutdown_rx) = watch::channel(false);
@@ -501,7 +501,8 @@ mod tests {
         assert!(matches!(
             server_task.await.unwrap(),
             Err(ConnectionError::Broker(BrokerError::Denied {
-                command_code: 0x17b
+                command_code: 0x17b,
+                ..
             }))
         ));
         assert!(commands.lock().unwrap().is_empty());

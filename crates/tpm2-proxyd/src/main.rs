@@ -33,6 +33,8 @@ mod broker;
 mod cli;
 /// Access-control rule model, policy file loading, and evaluation engine.
 mod policy;
+/// Command profiles loaded from the profiles directory.
+mod profile;
 /// Non-preemptive upstream TPM command scheduler.
 mod scheduler;
 /// Downstream Unix-socket listener and per-connection handling.
@@ -71,7 +73,7 @@ async fn main() -> ExitCode {
 }
 
 async fn run(options: cli::Options) -> anyhow::Result<()> {
-    let policy = policy::Policy::new(policy::PolicyConfig::load(&options.config)?);
+    let policy = policy::Policy::load(&options.config)?;
 
     let (scheduler, upstream_label) = start_scheduler(&options).await?;
     let broker = broker::Broker::new(policy, scheduler);
@@ -194,7 +196,7 @@ fn spawn_signal_handlers(
 /// Re-read the policy file and atomically swap it in, returning the new
 /// policy generation.
 fn reload_policy(broker: &broker::Broker, config_path: &Path) -> anyhow::Result<u64> {
-    let policy = policy::Policy::new(policy::PolicyConfig::load(config_path)?);
+    let policy = policy::Policy::load(config_path)?;
     Ok(broker.replace_policy(policy))
 }
 

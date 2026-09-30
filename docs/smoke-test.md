@@ -25,26 +25,20 @@ Build the daemon and TCTI:
 cargo build
 ```
 
-Create a test policy that allows the current user to run `TPM2_GetRandom`
-(`TPM_CC_GetRandom`, command code `0x0000017b`, decimal `379`):
+Create a test policy that gives the current user a profile allowing only
+`TPM2_GetRandom`. Profiles live in a `profiles` directory beside the policy:
 
 ```sh
-cat > /tmp/tpm2-proxyd-smoke.json <<EOF
+mkdir -p /tmp/tpm2-proxyd-smoke/profiles
+cat > /tmp/tpm2-proxyd-smoke/policy.json <<EOF
 {
-  "command_rules": [
-    {
-      "subject": { "uid": $(id -u) },
-      "commands": [379],
-      "decision": "allow"
-    }
-  ],
-  "priority_rules": [
-    {
-      "subject": { "uid": $(id -u) },
-      "max_priority": 10
-    }
+  "rules": [
+    { "subject": { "uid": $(id -u) }, "profile": "random", "max_priority": 10 }
   ]
 }
+EOF
+cat > /tmp/tpm2-proxyd-smoke/profiles/random.json <<EOF
+{ "commands": ["TPM_CC_GetRandom"] }
 EOF
 ```
 
@@ -52,7 +46,7 @@ Start the daemon in one terminal:
 
 ```sh
 cargo run -- \
-  --config=/tmp/tpm2-proxyd-smoke.json \
+  --config=/tmp/tpm2-proxyd-smoke/policy.json \
   --socket=/tmp/tpm2-proxyd.sock \
   --upstream=/dev/tpmrm0
 ```
@@ -76,6 +70,10 @@ The command succeeds only if the TCTI can connect to the daemon socket, the
 daemon authorizes `TPM2_GetRandom` for the connecting UID/GID, the scheduler
 forwards the command to `/dev/tpmrm0`, and a TPM response is returned.
 
-To confirm policy denial, remove command `379` from the config, restart the
-daemon, and rerun `tpm2_getrandom`. The command should fail before reaching the
-upstream TPM.
+To confirm policy denial, run a command the profile doesn't allow:
+
+```sh
+tpm2_getcap --tcti=proxy:/tmp/tpm2-proxyd.sock properties-fixed
+```
+
+It should fail without reaching the upstream TPM.

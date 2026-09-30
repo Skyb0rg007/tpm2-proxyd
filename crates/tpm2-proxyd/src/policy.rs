@@ -4,33 +4,41 @@
 
 //! Per-peer TPM command authorization and priority limits.
 //!
-//! Command rules are evaluated in declaration order and the first matching rule
-//! wins. A rule may match a UID, a group, both, or every peer; an empty command
-//! list matches every TPM command. Priority rules use the same subject matching
-//! and cap the priority fixed for a connection at admission time.
+//! The policy file (`--config=<path>`) assigns each peer a command profile (see
+//! [`crate::profile`]) and a priority cap:
 //!
-//! The on-disk policy file (`--config=<path>`) is the JSON form of
-//! [`PolicyConfig`]; `SIGHUP` reloads it. `docs/policy-language.md` describes
-//! its planned replacement.
+//! ```json
+//! {
+//!   "default_profile": "standard",
+//!   "default_max_priority": 0,
+//!   "rules": [
+//!     { "subject": { "gid": 1001 }, "profile": "full", "max_priority": 10 }
+//!   ]
+//! }
+//! ```
+//!
+//! Rules are evaluated in order and the first one whose subject matches the peer
+//! wins. A subject may name a UID, a group (primary or supplementary), both, or,
+//! if empty, every peer. A peer that matches no rule gets `default_profile`, or
+//! no access at all if that's unset. A rule without `max_priority` uses
+//! `default_max_priority`.
+//!
+//! Profiles are loaded from the `profiles` directory next to the policy file.
+//! Loading fails if any profile the policy names is missing or invalid, and
+//! `SIGHUP` reloads the policy and its profiles together.
 
-use std::{fs, io, path::Path};
+use std::{collections::HashMap, fmt, fs, io, path::Path, sync::Arc};
 
 use serde::Deserialize;
-use tpm2_protocol::data::TpmCc;
 
-use crate::{scheduler::Priority, server::peer::Peer, tpm::Command};
+use crate::{
+    profile::{Profile, Refusal},
+    scheduler::Priority,
+    server::peer::Peer,
+    tpm::Command,
+};
 
-/// Rule decision.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Deserialize)]
-#[serde(rename_all = "snake_case")]
-pub enum Decision {
-    /// Permit the command.
-    Allow,
-    /// Reject the command.
-    Deny,
-}
-
-/// Subject selector shared by command and priority rules.
+/// Peer selector.
 #[derive(Clone, Debug, Default, PartialEq, Eq, Deserialize)]
 #[serde(default, deny_unknown_fields)]
 pub struct Subject {
@@ -47,166 +55,188 @@ impl Subject {
     }
 }
 
-/// One ordered command authorization rule.
-#[derive(Clone, Debug, PartialEq, Eq, Deserialize)]
-#[serde(default, deny_unknown_fields)]
-pub struct CommandRule {
-    /// Peer selector.
-    pub subject: Subject,
-    /// TPM command codes matched by this rule; empty means all commands.
-    #[serde(with = "command_codes")]
-    pub commands: Vec<TpmCc>,
-    /// Decision returned when the rule matches.
-    pub decision: Decision,
-}
-
-impl Default for CommandRule {
-    fn default() -> Self {
-        Self {
-            subject: Subject::default(),
-            commands: Vec::new(),
-            decision: Decision::Deny,
-        }
-    }
-}
-
-/// Serde adapter for command code lists: numeric codes in the file, rejecting
-/// any code `tpm2-protocol` does not recognize.
-///
-/// Dropping an unrecognized code instead could leave a rule with an empty,
-/// match-everything command list.
-mod command_codes {
-    use serde::{Deserialize, Deserializer};
-    use tpm2_protocol::data::TpmCc;
-
-    pub fn deserialize<'de, D>(deserializer: D) -> Result<Vec<TpmCc>, D::Error>
-    where
-        D: Deserializer<'de>,
-    {
-        Vec::<u32>::deserialize(deserializer)?
-            .into_iter()
-            .map(TpmCc::try_from)
-            .collect::<Result<Vec<_>, _>>()
-            .map_err(serde::de::Error::custom)
-    }
-}
-
-/// One ordered connection-priority cap rule.
+/// On-disk form of the policy file.
 #[derive(Clone, Debug, Default, PartialEq, Eq, Deserialize)]
 #[serde(default, deny_unknown_fields)]
-pub struct PriorityRule {
-    /// Peer selector.
-    pub subject: Subject,
-    /// Highest priority the matching peer may request.
-    pub max_priority: i32,
-}
-
-/// Policy configuration, as loaded from the policy file.
-#[derive(Clone, Debug, PartialEq, Eq, Deserialize)]
-#[serde(default, deny_unknown_fields)]
 pub struct PolicyConfig {
-    /// Decision when no command rule matches.
-    pub default_decision: Decision,
-    /// Priority cap when no priority rule matches.
+    /// Profile for peers no rule matches; unset means no access.
+    pub default_profile: Option<String>,
+    /// Priority cap for peers no rule matches, and for rules without one.
     pub default_max_priority: i32,
-    /// Ordered command rules.
-    pub command_rules: Vec<CommandRule>,
-    /// Ordered priority cap rules.
-    pub priority_rules: Vec<PriorityRule>,
+    /// Ordered rules; the first match wins.
+    pub rules: Vec<Rule>,
 }
 
-impl Default for PolicyConfig {
-    fn default() -> Self {
-        Self {
-            default_decision: Decision::Deny,
-            default_max_priority: 0,
-            command_rules: Vec::new(),
-            priority_rules: Vec::new(),
-        }
-    }
+/// One ordered policy rule.
+#[derive(Clone, Debug, PartialEq, Eq, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct Rule {
+    /// Peer selector.
+    #[serde(default)]
+    pub subject: Subject,
+    /// Profile for matching peers.
+    pub profile: String,
+    /// Priority cap for matching peers, if not `default_max_priority`.
+    pub max_priority: Option<i32>,
 }
 
-/// Policy file load error.
+/// Policy or profile load error.
 #[derive(Debug, thiserror::Error)]
 pub enum Error {
-    /// Reading the policy file failed.
-    #[error("failed to read policy {path}: {source}")]
+    /// Reading a file failed.
+    #[error("failed to read {path}: {source}")]
     Read {
-        /// Policy file path.
+        /// File path.
         path: String,
         /// Underlying I/O error.
         source: io::Error,
     },
-    /// Parsing the policy file failed.
-    #[error("failed to parse policy {path}: {source}")]
-    Parse {
-        /// Policy file path.
+    /// A file isn't a valid policy or profile.
+    #[error("invalid {path}: {message}")]
+    Invalid {
+        /// File path.
         path: String,
-        /// Underlying JSON error.
-        source: serde_json::Error,
+        /// What's wrong with it.
+        message: String,
     },
 }
 
-impl PolicyConfig {
-    /// Load a JSON policy file from disk.
-    pub fn load(path: impl AsRef<Path>) -> Result<Self, Error> {
-        let path = path.as_ref();
-        let display = path.display().to_string();
-        let data = fs::read_to_string(path).map_err(|source| Error::Read {
-            path: display.clone(),
-            source,
-        })?;
-        serde_json::from_str(&data).map_err(|source| Error::Parse {
-            path: display,
-            source,
-        })
+/// Why the policy denied a command.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum Denial {
+    /// No rule or default gives the peer a profile.
+    NoProfile,
+    /// The peer's profile refused the command.
+    Refused {
+        /// Profile that refused it.
+        profile: String,
+        /// Why.
+        refusal: Refusal,
+    },
+}
+
+impl fmt::Display for Denial {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::NoProfile => write!(f, "no profile"),
+            Self::Refused { profile, refusal } => write!(f, "profile {profile}: {refusal}"),
+        }
     }
 }
 
 /// Compiled policy evaluator.
 #[derive(Clone, Debug)]
 pub struct Policy {
-    config: PolicyConfig,
+    default_profile: Option<Arc<Profile>>,
+    default_max_priority: i32,
+    rules: Vec<CompiledRule>,
+}
+
+#[derive(Clone, Debug)]
+struct CompiledRule {
+    subject: Subject,
+    profile: Arc<Profile>,
+    max_priority: i32,
 }
 
 impl Policy {
-    /// Compile a policy configuration.
-    pub fn new(config: PolicyConfig) -> Self {
-        Self { config }
+    /// Load the policy file at `path` and the profiles it names from the
+    /// `profiles` directory beside it.
+    pub fn load(path: &Path) -> Result<Self, Error> {
+        let display = path.display().to_string();
+        let data = fs::read_to_string(path).map_err(|source| Error::Read {
+            path: display.clone(),
+            source,
+        })?;
+        let config = serde_json::from_str(&data).map_err(|error| Error::Invalid {
+            path: display,
+            message: error.to_string(),
+        })?;
+        let profiles = path.parent().unwrap_or(Path::new(".")).join("profiles");
+        Self::compile(config, |name| Profile::load(&profiles, name))
     }
 
-    /// Policy allowing every peer every command, for tests.
-    #[cfg(test)]
-    pub fn allow_all() -> Self {
-        Self::new(PolicyConfig {
-            default_decision: Decision::Allow,
-            default_max_priority: i32::MAX,
-            ..PolicyConfig::default()
+    /// Compile `config`, loading each profile it names once with `load`.
+    pub fn compile(
+        config: PolicyConfig,
+        mut load: impl FnMut(&str) -> Result<Profile, Error>,
+    ) -> Result<Self, Error> {
+        let mut profiles = HashMap::new();
+        let mut profile = |name: &str| -> Result<Arc<Profile>, Error> {
+            if let Some(profile) = profiles.get(name) {
+                return Ok(Arc::clone(profile));
+            }
+            let profile = Arc::new(load(name)?);
+            profiles.insert(name.to_owned(), Arc::clone(&profile));
+            Ok(profile)
+        };
+
+        let default_profile = config
+            .default_profile
+            .as_deref()
+            .map(&mut profile)
+            .transpose()?;
+        let rules = config
+            .rules
+            .into_iter()
+            .map(|rule| {
+                Ok(CompiledRule {
+                    profile: profile(&rule.profile)?,
+                    subject: rule.subject,
+                    max_priority: rule.max_priority.unwrap_or(config.default_max_priority),
+                })
+            })
+            .collect::<Result<_, Error>>()?;
+        Ok(Self {
+            default_profile,
+            default_max_priority: config.default_max_priority,
+            rules,
         })
     }
 
-    /// Decide whether `peer` may execute `command`.
-    pub fn authorize(&self, peer: &Peer, command: &Command) -> Decision {
-        self.config
-            .command_rules
-            .iter()
-            .find(|rule| {
-                rule.subject.matches(peer)
-                    && (rule.commands.is_empty() || rule.commands.contains(&command.code()))
-            })
-            .map_or(self.config.default_decision, |rule| rule.decision)
+    /// The profile and priority cap that apply to `peer`.
+    fn lookup(&self, peer: &Peer) -> (Option<&Profile>, i32) {
+        match self.rules.iter().find(|rule| rule.subject.matches(peer)) {
+            Some(rule) => (Some(&rule.profile), rule.max_priority),
+            None => (self.default_profile.as_deref(), self.default_max_priority),
+        }
     }
 
-    /// Bound a requested connection priority according to the first matching
-    /// priority rule, or the default cap.
+    /// Decide whether `peer` may execute `command`.
+    pub fn authorize(&self, peer: &Peer, command: &Command) -> Result<(), Denial> {
+        let profile = self.lookup(peer).0.ok_or(Denial::NoProfile)?;
+        profile.check(command).map_err(|refusal| Denial::Refused {
+            profile: profile.name().to_owned(),
+            refusal,
+        })
+    }
+
+    /// Bound a requested connection priority by the cap that applies to `peer`.
     pub fn cap_priority(&self, peer: &Peer, requested: Priority) -> Priority {
-        let cap = self
-            .config
-            .priority_rules
-            .iter()
-            .find(|rule| rule.subject.matches(peer))
-            .map_or(self.config.default_max_priority, |rule| rule.max_priority);
-        Priority(requested.0.min(cap))
+        Priority(requested.0.min(self.lookup(peer).1))
+    }
+
+    /// Compile a policy from JSON text and `(name, JSON)` profiles, for tests.
+    #[cfg(test)]
+    pub fn from_json(policy: &str, profiles: &[(&str, &str)]) -> Self {
+        let config = serde_json::from_str(policy).expect("valid test policy");
+        Self::compile(config, |name| {
+            let (_, json) = profiles
+                .iter()
+                .find(|(candidate, _)| *candidate == name)
+                .unwrap_or_else(|| panic!("no test profile {name}"));
+            Ok(Profile::parse(name, json).expect("valid test profile"))
+        })
+        .expect("test policy compiles")
+    }
+
+    /// Policy allowing every peer every command at any priority, for tests.
+    #[cfg(test)]
+    pub fn allow_all() -> Self {
+        Self::from_json(
+            r#"{"default_profile": "all", "default_max_priority": 2147483647}"#,
+            &[("all", r#"{"commands": ["*"], "handles": ["*"]}"#)],
+        )
     }
 }
 
@@ -221,54 +251,59 @@ mod tests {
         Command::parse(bytes, 4096).unwrap()
     }
 
+    const GET_RANDOM: u32 = 0x17b;
+    const GET_CAPABILITY: u32 = 0x17a;
+
+    const PROFILES: &[(&str, &str)] = &[
+        ("random", r#"{"commands": ["TPM_CC_GetRandom"]}"#),
+        ("all", r#"{"commands": ["*"]}"#),
+    ];
+
     #[test]
-    fn first_matching_command_rule_wins() {
-        let policy = Policy::new(PolicyConfig {
-            command_rules: vec![
-                CommandRule {
-                    subject: Subject {
-                        uid: Some(1000),
-                        gid: None,
-                    },
-                    commands: vec![TpmCc::GetRandom],
-                    decision: Decision::Allow,
-                },
-                CommandRule {
-                    subject: Subject::default(),
-                    commands: vec![TpmCc::GetRandom],
-                    decision: Decision::Deny,
-                },
-            ],
-            ..PolicyConfig::default()
-        });
+    fn first_matching_rule_wins() {
+        let policy = Policy::from_json(
+            r#"{
+                "default_profile": "random",
+                "rules": [
+                    {"subject": {"uid": 1000}, "profile": "all"},
+                    {"subject": {"gid": 100}, "profile": "random"}
+                ]
+            }"#,
+            PROFILES,
+        );
 
         assert_eq!(
-            policy.authorize(&Peer::new(1000, 100), &command(0x17b)),
-            Decision::Allow
+            policy.authorize(&Peer::new(1000, 100), &command(GET_CAPABILITY)),
+            Ok(())
         );
         assert_eq!(
-            policy.authorize(&Peer::new(1001, 100), &command(0x17b)),
-            Decision::Deny
+            policy.authorize(&Peer::new(1001, 100), &command(GET_CAPABILITY)),
+            Err(Denial::Refused {
+                profile: "random".into(),
+                refusal: Refusal::Command,
+            })
         );
+    }
+
+    #[test]
+    fn peers_without_a_profile_are_denied_everything() {
+        let policy = Policy::from_json(
+            r#"{"rules": [{"subject": {"uid": 1000}, "profile": "all"}]}"#,
+            PROFILES,
+        );
+
         assert_eq!(
-            policy.authorize(&Peer::new(1000, 100), &command(0x17a)),
-            Decision::Deny
+            policy.authorize(&Peer::new(1001, 100), &command(GET_RANDOM)),
+            Err(Denial::NoProfile)
         );
     }
 
     #[test]
     fn supplementary_groups_match_rules() {
-        let policy = Policy::new(PolicyConfig {
-            command_rules: vec![CommandRule {
-                subject: Subject {
-                    uid: None,
-                    gid: Some(42),
-                },
-                commands: Vec::new(),
-                decision: Decision::Allow,
-            }],
-            ..PolicyConfig::default()
-        });
+        let policy = Policy::from_json(
+            r#"{"rules": [{"subject": {"gid": 42}, "profile": "all"}]}"#,
+            PROFILES,
+        );
         let peer = Peer {
             uid: 1000,
             primary_gid: 100,
@@ -276,92 +311,67 @@ mod tests {
             pid: None,
         };
 
-        assert_eq!(policy.authorize(&peer, &command(0x17b)), Decision::Allow);
+        assert_eq!(policy.authorize(&peer, &command(GET_RANDOM)), Ok(()));
     }
 
     #[test]
     fn requested_priority_is_capped_per_subject() {
-        let policy = Policy::new(PolicyConfig {
-            default_max_priority: 1,
-            priority_rules: vec![PriorityRule {
-                subject: Subject {
-                    uid: Some(1000),
-                    gid: None,
-                },
-                max_priority: 7,
-            }],
-            ..PolicyConfig::default()
-        });
-
-        assert_eq!(
-            policy.cap_priority(&Peer::new(1000, 100), Priority(20)),
-            Priority(7)
-        );
-        assert_eq!(
-            policy.cap_priority(&Peer::new(1001, 100), Priority(20)),
-            Priority(1)
-        );
-        assert_eq!(
-            policy.cap_priority(&Peer::new(1000, 100), Priority(-2)),
-            Priority(-2)
-        );
-    }
-
-    #[test]
-    fn policy_config_deserializes_from_json() {
-        let config: PolicyConfig = serde_json::from_str(
+        let policy = Policy::from_json(
             r#"{
-                "default_decision": "deny",
+                "default_profile": "random",
                 "default_max_priority": 1,
-                "command_rules": [{
-                    "subject": {"uid": 1000},
-                    "commands": [379],
-                    "decision": "allow"
-                }],
-                "priority_rules": [{
-                    "subject": {"gid": 42},
-                    "max_priority": 5
-                }]
+                "rules": [
+                    {"subject": {"uid": 1000}, "profile": "all", "max_priority": 7},
+                    {"subject": {"uid": 1002}, "profile": "all"}
+                ]
             }"#,
-        )
-        .unwrap();
+            PROFILES,
+        );
 
-        assert_eq!(config.command_rules[0].commands, [TpmCc::GetRandom]);
-        assert_eq!(config.priority_rules[0].max_priority, 5);
+        let cap = |uid, requested| policy.cap_priority(&Peer::new(uid, 100), Priority(requested));
+        assert_eq!(cap(1000, 20), Priority(7));
+        assert_eq!(cap(1000, -2), Priority(-2));
+        // No rule: the default cap.
+        assert_eq!(cap(1001, 20), Priority(1));
+        // A rule without max_priority: also the default cap.
+        assert_eq!(cap(1002, 20), Priority(1));
     }
 
     #[test]
-    fn rejects_unrecognized_command_codes() {
-        // 0x197 (TPM2_CertifyX509) is a real command tpm2-protocol lacks.
-        // Dropping it would leave an empty, allow-everything command list.
-        let err = serde_json::from_str::<PolicyConfig>(
-            r#"{
-                "command_rules": [{
-                    "subject": {"uid": 1000},
-                    "commands": [407],
-                    "decision": "allow"
-                }]
-            }"#,
-        )
-        .unwrap_err();
+    fn loads_profiles_from_beside_the_policy_file() {
+        let dir = std::env::temp_dir().join(format!("tpm2-proxyd-policy-{}", std::process::id()));
+        fs::create_dir_all(dir.join("profiles")).unwrap();
+        fs::write(dir.join("policy.json"), r#"{"default_profile": "random"}"#).unwrap();
+        fs::write(dir.join("profiles/random.json"), PROFILES[0].1).unwrap();
+        let loaded = Policy::load(&dir.join("policy.json"));
+        fs::write(dir.join("policy.json"), r#"{"default_profile": "missing"}"#).unwrap();
+        let missing = Policy::load(&dir.join("policy.json"));
+        fs::remove_dir_all(&dir).unwrap();
 
-        assert!(err.is_data(), "{err}");
+        assert_eq!(
+            loaded
+                .unwrap()
+                .authorize(&Peer::new(1000, 100), &command(GET_RANDOM)),
+            Ok(())
+        );
+        assert!(matches!(missing, Err(Error::Read { .. })), "{missing:?}");
     }
 
     #[test]
-    fn rejects_unknown_fields() {
-        let err = serde_json::from_str::<PolicyConfig>(
-            r#"{
-                "command_rules": [{
-                    "subject": {"uid": 1000},
-                    "commands": [379],
-                    "decision": "allow",
-                    "priority": 7
-                }]
-            }"#,
-        )
-        .unwrap_err();
-
-        assert!(err.to_string().contains("unknown field"));
+    fn rejects_invalid_policies() {
+        let cases = [
+            ("unknown field", r#"{"rules": [], "extra": true}"#),
+            (
+                "rule without a profile",
+                r#"{"rules": [{"subject": {"uid": 1}}]}"#,
+            ),
+            ("old command_rules format", r#"{"command_rules": []}"#),
+        ];
+        for (name, json) in cases {
+            assert!(
+                serde_json::from_str::<PolicyConfig>(json).is_err(),
+                "{name}"
+            );
+        }
     }
 }
