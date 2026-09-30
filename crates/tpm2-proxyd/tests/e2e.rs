@@ -185,14 +185,19 @@ fn parallel_commands_are_all_served() {
     );
 }
 
-/// The TCTI module that clients load talks to the daemon: its hello is
-/// accepted and a command round-trips through the proxy to the TPM. This is
-/// what keeps the module and the daemon agreeing on the wire protocol.
+/// The TCTI module that clients load talks to the daemon: its hello, with a
+/// requested priority from the config string, is accepted and a command
+/// round-trips through the proxy to the TPM. This is what keeps the module and
+/// the daemon agreeing on the wire protocol.
 #[test]
 fn tcti_module_round_trips_through_the_proxy() {
     let env = common::TestEnv::start_allow_all();
     let info = unsafe { &*tss2_tcti_proxy::Tss2_Tcti_Info() };
-    let config = CString::new(env.socket().to_str().unwrap()).unwrap();
+    let config = CString::new(format!(
+        "path={},priority=7",
+        env.socket().to_str().unwrap()
+    ))
+    .unwrap();
 
     // Two-phase init, as tpm2-tss's loader does it: query the context size,
     // then initialize a buffer of that size.

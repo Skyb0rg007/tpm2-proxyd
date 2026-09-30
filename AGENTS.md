@@ -53,8 +53,9 @@ registry) →
 per-client sessions) → `upstream` (the TPM).
 
 - One Unix socket (default `/run/tpm2-proxyd/tpm2-proxyd.sock`) speaking a
-  custom binary protocol: each connection opens with an 8-byte hello
-  (`server/hello.rs`: magic, version, flags; the reply carries a status), then
+  custom binary protocol: each connection opens with a 12-byte hello
+  (`server/hello.rs`: magic, version, flags, requested priority; the reply
+  carries a status and the policy-capped priority granted), then
   carries the raw, self-framing TPM command/response stream. There is no
   control interface; don't add Varlink or D-Bus. New per-connection options go
   in the hello's flags. The hello is spelled out in `docs/design.md`.

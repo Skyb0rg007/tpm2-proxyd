@@ -4,9 +4,9 @@
 
 //! Raw TPM command listener for Unix-domain sockets.
 //!
-//! Derives admission context from Unix peer credentials. Clients cannot request
-//! their own priority; the listener asks for [`Priority::MAX`] and the broker's
-//! policy cap for the peer's UID/GID determines the effective priority.
+//! Derives each client's identity from Unix peer credentials. The client
+//! requests its priority in the hello (see `server::hello`), and the broker's
+//! policy cap for the peer's UID/GID bounds it.
 
 #![allow(dead_code)] // Main wiring is implemented in a later change.
 
@@ -18,12 +18,9 @@ use std::{
 
 use tokio::net::{UnixListener, UnixStream};
 
-use crate::{
-    scheduler::Priority,
-    server::{
-        connection::{Accepted, Listener},
-        peer::Peer,
-    },
+use crate::server::{
+    connection::{Accepted, Listener},
+    peer::Peer,
 };
 
 /// Default mode for the temporary raw TPM socket.
@@ -159,24 +156,12 @@ fn accept_stream(
     stream: UnixStream,
 ) -> io::Result<Accepted<UnixStream>> {
     let peer = resolver.peer(&stream)?;
-    Ok(Accepted {
-        stream,
-        peer,
-        requested_priority: Priority::MAX,
-    })
+    Ok(Accepted { stream, peer })
 }
 
 #[cfg(test)]
 mod tests {
     use std::{fs, path::PathBuf};
-
-    use crate::{
-        broker::Broker,
-        policy::{Policy, PolicyConfig, PriorityRule, Subject},
-        scheduler::CommandScheduler,
-        tpm::{Command, DEFAULT_MAX_PACKET_SIZE, Response},
-        upstream::{SessionId, Upstream, UpstreamError},
-    };
 
     use super::*;
 
@@ -193,23 +178,6 @@ mod tests {
         }
     }
 
-    struct EchoUpstream;
-
-    #[async_trait::async_trait]
-    impl Upstream for EchoUpstream {
-        async fn transact(
-            &mut self,
-            _session: SessionId,
-            command: &Command,
-        ) -> Result<Response, UpstreamError> {
-            let mut response = Vec::from(0x8001u16.to_be_bytes());
-            response.extend_from_slice(&14u32.to_be_bytes());
-            response.extend_from_slice(&0u32.to_be_bytes());
-            response.extend_from_slice(&command.code().value().to_be_bytes());
-            Ok(Response::parse(response, DEFAULT_MAX_PACKET_SIZE).unwrap())
-        }
-    }
-
     #[tokio::test]
     async fn accepted_stream_comes_from_resolved_unix_peer() {
         let (client, server) = UnixStream::pair().unwrap();
@@ -222,31 +190,7 @@ mod tests {
         let accepted = accept_stream(&StaticPeerResolver(peer.clone()), server).unwrap();
 
         assert_eq!(accepted.peer, peer);
-        assert_eq!(accepted.requested_priority, Priority::MAX);
         drop(client);
-    }
-
-    #[tokio::test]
-    async fn unix_stream_uses_policy_to_determine_priority() {
-        let (_probe, server) = UnixStream::pair().unwrap();
-        let peer = Peer::new(1000, 100);
-        let accepted = accept_stream(&StaticPeerResolver(peer), server).unwrap();
-
-        let scheduler = CommandScheduler::start(EchoUpstream, 4);
-        let policy = Policy::new(PolicyConfig {
-            priority_rules: vec![PriorityRule {
-                subject: Subject {
-                    uid: Some(1000),
-                    gid: None,
-                },
-                max_priority: 6,
-            }],
-            ..PolicyConfig::default()
-        });
-        let broker = Broker::new(policy, scheduler);
-        let client = broker.admit(accepted.peer, accepted.requested_priority);
-
-        assert_eq!(client.priority(), Priority(6));
     }
 
     /// Fails to resolve the first peer only.

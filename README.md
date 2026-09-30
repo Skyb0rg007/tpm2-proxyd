@@ -120,6 +120,16 @@ tpm2_getrandom --tcti=proxy:/run/tpm2-proxyd/tpm2-proxyd.sock 8
 export TPM2TOOLS_TCTI=proxy:/run/tpm2-proxyd/tpm2-proxyd.sock
 ```
 
+The config string after `proxy:` is either a bare socket path or
+comma-separated settings: `path=<socket>` and `priority=<n>`, the scheduling
+priority to request (higher runs first). By default a client asks for the
+highest priority its policy allows; the policy's `priority_rules` cap whatever
+it asks for. For example, to run a background job below interactive clients:
+
+```sh
+tpm2_getrandom --tcti=proxy:priority=0 8
+```
+
 ## Using swtpm instead of a hardware TPM
 
 For development and testing, the proxy can talk to a [swtpm][] software TPM over

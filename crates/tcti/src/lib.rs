@@ -13,9 +13,14 @@
 //!
 //! This module is the downstream half of `tpm2-proxyd`: it forwards the raw TPM
 //! command byte stream to the proxy daemon over a Unix domain socket and reads
-//! the raw response back. The socket path is taken from the TCTI config string
-//! (e.g. `--tcti=proxy:/run/tpm2-proxyd/tpm2-proxyd.sock`), defaulting to
-//! [`DEFAULT_SOCKET_PATH`].
+//! the raw response back. The TCTI config string is either a bare socket path
+//! (`--tcti=proxy:/run/tpm2-proxyd/tpm2-proxyd.sock`) or comma-separated
+//! `key=value` settings (`--tcti=proxy:path=/run/...sock,priority=5`):
+//!
+//! - `path`: the daemon's socket, default [`DEFAULT_SOCKET_PATH`].
+//! - `priority`: the scheduling priority to request, a signed 32-bit integer
+//!   where higher runs first. The default, `i32::MAX`, asks for the highest
+//!   priority the daemon's policy allows this user.
 //!
 //! Wire protocol (must stay in sync with the daemon's `server::hello` and
 //! `server::connection`): `init` sends a hello and checks the daemon's reply
@@ -141,7 +146,7 @@ const HELLO_MAGIC: [u8; 4] = *b"TPXH";
 /// Protocol version this module speaks.
 const HELLO_VERSION: u16 = 1;
 /// Size of the hello and of its reply.
-const HELLO_SIZE: usize = 8;
+const HELLO_SIZE: usize = 12;
 /// How long to wait for the daemon's reply to the hello.
 const HELLO_TIMEOUT: Duration = Duration::from_secs(10);
 /// Hello reply statuses.
@@ -168,7 +173,9 @@ struct ProxyContext {
 const INFO_NAME: &CStr = c"proxy";
 const INFO_DESCRIPTION: &CStr = c"TCTI module forwarding TPM commands to tpm2-proxyd.";
 const INFO_CONFIG_HELP: &CStr =
-    c"Path to the tpm2-proxyd Unix socket. Default: /run/tpm2-proxyd/tpm2-proxyd.sock";
+    c"Path to the tpm2-proxyd Unix socket, or key=value pairs separated by commas: \
+    path=<socket> (default /run/tpm2-proxyd/tpm2-proxyd.sock), \
+    priority=<i32> (default: the highest the daemon's policy allows).";
 
 static TCTI_INFO: TctiInfo = TctiInfo {
     version: TCTI_VERSION,
@@ -224,21 +231,24 @@ unsafe extern "C" fn tcti_proxy_init(
         return TSS2_RC_SUCCESS;
     }
 
-    let path = if config.is_null() {
-        DEFAULT_SOCKET_PATH
+    let config = if config.is_null() {
+        Config::default()
     } else {
-        match unsafe { CStr::from_ptr(config) }.to_str() {
-            Ok(s) if !s.is_empty() => s,
-            Ok(_) => DEFAULT_SOCKET_PATH,
-            Err(_) => return TSS2_TCTI_RC_BAD_VALUE,
+        match unsafe { CStr::from_ptr(config) }
+            .to_str()
+            .ok()
+            .and_then(Config::parse)
+        {
+            Some(config) => config,
+            None => return TSS2_TCTI_RC_BAD_VALUE,
         }
     };
 
-    let mut stream = match UnixStream::connect(path) {
+    let mut stream = match UnixStream::connect(config.path) {
         Ok(s) => s,
         Err(_) => return TSS2_TCTI_RC_NO_CONNECTION,
     };
-    if let Err(rc) = hello(&mut stream) {
+    if let Err(rc) = hello(&mut stream, config.priority) {
         return rc;
     }
 
@@ -267,15 +277,58 @@ unsafe extern "C" fn tcti_proxy_init(
     TSS2_RC_SUCCESS
 }
 
-/// Send the hello and check the daemon's reply.
+/// Settings from the TCTI config string.
+#[derive(Debug, PartialEq, Eq)]
+struct Config<'a> {
+    /// Daemon socket path.
+    path: &'a str,
+    /// Scheduling priority to request in the hello.
+    priority: i32,
+}
+
+impl Default for Config<'_> {
+    fn default() -> Self {
+        Self {
+            path: DEFAULT_SOCKET_PATH,
+            priority: i32::MAX,
+        }
+    }
+}
+
+impl<'a> Config<'a> {
+    /// Parse a config string: empty, a bare socket path, or comma-separated
+    /// `path=`/`priority=` settings. Returns `None` if it's malformed.
+    fn parse(config: &'a str) -> Option<Self> {
+        let mut parsed = Self::default();
+        if !config.contains('=') {
+            if !config.is_empty() {
+                parsed.path = config;
+            }
+            return Some(parsed);
+        }
+        for setting in config.split(',') {
+            match setting.split_once('=')? {
+                ("path", path) if !path.is_empty() => parsed.path = path,
+                ("priority", priority) => parsed.priority = priority.parse().ok()?,
+                _ => return None,
+            }
+        }
+        Some(parsed)
+    }
+}
+
+/// Send the hello requesting `priority`, and check the daemon's reply.
 ///
-/// The hello is `"TPXH"`, a big-endian `u16` version, and big-endian `u16`
-/// flags (none are defined yet). The reply is `"TPXH"`, the daemon's version,
-/// and a big-endian `u16` status.
-fn hello(stream: &mut UnixStream) -> Result<(), Tss2Rc> {
+/// The hello is `"TPXH"`, a big-endian `u16` version, big-endian `u16` flags
+/// (none are defined yet), and the big-endian `i32` requested priority. The
+/// reply is `"TPXH"`, the daemon's version, a big-endian `u16` status, and the
+/// big-endian `i32` priority the daemon granted. Nothing here needs the granted
+/// priority, so it's not kept.
+fn hello(stream: &mut UnixStream, priority: i32) -> Result<(), Tss2Rc> {
     let mut hello = [0u8; HELLO_SIZE];
     hello[..4].copy_from_slice(&HELLO_MAGIC);
     hello[4..6].copy_from_slice(&HELLO_VERSION.to_be_bytes());
+    hello[8..].copy_from_slice(&priority.to_be_bytes());
     stream
         .set_read_timeout(Some(HELLO_TIMEOUT))
         .map_err(|_| TSS2_TCTI_RC_IO_ERROR)?;
@@ -506,8 +559,9 @@ mod tests {
     }
 
     /// Run `init` against a fake daemon that answers the hello with `reply`,
-    /// returning `init`'s result and the hello the daemon received.
-    fn init_against(reply: [u8; HELLO_SIZE]) -> (Tss2Rc, [u8; HELLO_SIZE]) {
+    /// returning `init`'s result and the hello the daemon received. `settings`
+    /// are appended to the config string's `path=` setting.
+    fn init_against(settings: &str, reply: [u8; HELLO_SIZE]) -> (Tss2Rc, [u8; HELLO_SIZE]) {
         use std::os::unix::net::UnixListener;
         use std::sync::atomic::{AtomicU32, Ordering};
 
@@ -527,7 +581,8 @@ mod tests {
             hello
         });
 
-        let config = std::ffi::CString::new(path.to_str().unwrap()).unwrap();
+        let config =
+            std::ffi::CString::new(format!("path={}{settings}", path.to_str().unwrap())).unwrap();
         let mut ctx = std::mem::MaybeUninit::<ProxyContext>::uninit();
         let mut size = size_of::<ProxyContext>();
         let ctx_ptr = ctx.as_mut_ptr().cast::<TctiContext>();
@@ -545,25 +600,73 @@ mod tests {
         let cases = [
             (
                 "unsupported",
-                *b"TPXH\0\x01\0\x01",
+                *b"TPXH\0\x01\0\x01\0\0\0\0",
                 TSS2_TCTI_RC_NOT_SUPPORTED,
             ),
-            ("busy", *b"TPXH\0\x01\0\x02", TSS2_TCTI_RC_NO_CONNECTION),
+            (
+                "busy",
+                *b"TPXH\0\x01\0\x02\0\0\0\0",
+                TSS2_TCTI_RC_NO_CONNECTION,
+            ),
             (
                 "unknown status",
-                *b"TPXH\0\x01\0\x09",
+                *b"TPXH\0\x01\0\x09\0\0\0\0",
                 TSS2_TCTI_RC_GENERAL_FAILURE,
             ),
             (
                 "not a reply",
-                *b"\x80\x01\0\0\0\x0a\0\0",
+                *b"\x80\x01\0\0\0\x0c\0\0\x01\x7b\0\x08",
                 TSS2_TCTI_RC_MALFORMED_RESPONSE,
             ),
         ];
         for (name, reply, expected) in cases {
-            let (rc, hello) = init_against(reply);
+            let (rc, hello) = init_against("", reply);
             assert_eq!(rc, expected, "{name}");
-            assert_eq!(hello, *b"TPXH\0\x01\0\0", "{name}");
+            assert_eq!(hello, *b"TPXH\0\x01\0\0\x7f\xff\xff\xff", "{name}");
+        }
+    }
+
+    #[test]
+    fn init_requests_the_configured_priority() {
+        let (rc, hello) = init_against(",priority=-2", *b"TPXH\0\x01\0\0\xff\xff\xff\xfe");
+        assert_eq!(rc, TSS2_RC_SUCCESS);
+        assert_eq!(hello, *b"TPXH\0\x01\0\0\xff\xff\xff\xfe");
+    }
+
+    #[test]
+    fn parses_config_strings() {
+        let default = Config::default();
+        let cases = [
+            ("", Some(default)),
+            (
+                "/tmp/proxy.sock",
+                Some(Config {
+                    path: "/tmp/proxy.sock",
+                    ..Config::default()
+                }),
+            ),
+            (
+                "priority=5",
+                Some(Config {
+                    priority: 5,
+                    ..Config::default()
+                }),
+            ),
+            (
+                "path=/tmp/proxy.sock,priority=-3",
+                Some(Config {
+                    path: "/tmp/proxy.sock",
+                    priority: -3,
+                }),
+            ),
+            ("priority=high", None),
+            ("priority=2147483648", None),
+            ("path=", None),
+            ("colour=blue", None),
+            ("/tmp/proxy.sock,priority=5", None),
+        ];
+        for (config, expected) in cases {
+            assert_eq!(Config::parse(config), expected, "{config:?}");
         }
     }
 

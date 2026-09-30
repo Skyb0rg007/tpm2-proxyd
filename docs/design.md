@@ -26,10 +26,11 @@ consults NSS, so a slow user database can't stall accepting clients.
 
 Every connection opens with a **hello**, then carries TPM traffic:
 
-1. **Hello.** The client sends 8 bytes: the magic `"TPXH"`, a `u16` protocol
-   version (currently `1`), and `u16` flags. The server answers with 8 bytes:
-   `"TPXH"`, its own version, and a `u16` status. Fields are big-endian, like TPM
-   fields.
+1. **Hello.** The client sends 12 bytes: the magic `"TPXH"`, a `u16` protocol
+   version (currently `1`), `u16` flags, and the `i32` scheduling priority it
+   requests. The server answers with 12 bytes: `"TPXH"`, its own version, a
+   `u16` status, and the `i32` priority it granted (`0` on a refusal). Fields
+   are big-endian, like TPM fields.
 
    | Status | Meaning |
    | --- | --- |
@@ -54,9 +55,12 @@ The downstream `tss2-tcti-proxy` module sends the hello from its `init`, so a
 refused connection fails `init` with a TCTI error rather than failing on the
 first command.
 
-Clients can't choose their priority yet: the policy's cap for the peer's
-UID/GID sets it. The policy is reloaded on `SIGHUP`; there is no control
-interface for status or reloads.
+The hello negotiates the connection's priority: the server grants the requested
+priority, capped by the policy's limit for the peer's UID/GID, and the grant is
+fixed for the connection's lifetime. Higher priorities run first. A client that
+doesn't care requests `i32::MAX`, the highest its policy allows; the TCTI module
+does this unless its config string sets `priority=`. The policy is reloaded on
+`SIGHUP`; there is no control interface for status or reloads.
 
 ## Request pipeline
 

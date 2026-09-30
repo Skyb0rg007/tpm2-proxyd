@@ -241,11 +241,14 @@ impl TestEnv {
         stream
             .set_read_timeout(Some(Duration::from_secs(20)))
             .expect("set read timeout");
-        // Version 1 hello with no flags; the reply must be "accepted".
-        stream.write_all(b"TPXH\0\x01\0\0").expect("send hello");
-        let mut reply = [0u8; 8];
+        // Version 1 hello with no flags, requesting the highest priority; the
+        // reply must be "accepted", granting the policy's cap of 100.
+        stream
+            .write_all(b"TPXH\0\x01\0\0\x7f\xff\xff\xff")
+            .expect("send hello");
+        let mut reply = [0u8; 12];
         stream.read_exact(&mut reply).expect("read hello reply");
-        assert_eq!(&reply, b"TPXH\0\x01\0\0", "hello refused");
+        assert_eq!(&reply, b"TPXH\0\x01\0\0\0\0\0\x64", "hello refused");
         Client { stream }
     }
 }

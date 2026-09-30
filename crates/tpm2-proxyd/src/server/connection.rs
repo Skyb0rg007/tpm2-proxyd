@@ -42,10 +42,11 @@ pub trait ClientStream: Send + 'static {
     /// Read the client's hello.
     fn read_hello(&mut self) -> impl Future<Output = io::Result<Hello>> + Send;
 
-    /// Answer the client's hello.
+    /// Answer the client's hello with a status and the granted priority.
     fn write_hello_reply(
         &mut self,
         status: HelloStatus,
+        priority: Priority,
     ) -> impl Future<Output = io::Result<()>> + Send;
 
     /// Read the next command, or `None` for a clean EOF between commands.
@@ -71,8 +72,12 @@ where
         Hello::parse(bytes)
     }
 
-    async fn write_hello_reply(&mut self, status: HelloStatus) -> io::Result<()> {
-        self.write_all(&status.reply()).await?;
+    async fn write_hello_reply(
+        &mut self,
+        status: HelloStatus,
+        priority: Priority,
+    ) -> io::Result<()> {
+        self.write_all(&status.reply(priority)).await?;
         self.flush().await
     }
 
@@ -86,14 +91,12 @@ where
     }
 }
 
-/// Stream accepted from a listener and the fixed priority for its lifetime.
+/// Stream accepted from a listener and the identity of its peer.
 pub struct Accepted<S> {
     /// Connected client transport.
     pub stream: S,
     /// Authenticated identity used for policy decisions.
     pub peer: Peer,
-    /// Scheduling priority requested by the client.
-    pub requested_priority: Priority,
 }
 
 /// Abstract source of admitted client connections.
@@ -134,14 +137,12 @@ impl TokioListener for tokio::net::TcpListener {
     }
 }
 
-/// Test adapter for listeners whose clients share one static identity/priority.
+/// Test adapter for listeners whose clients share one static identity.
 ///
-/// Transports with an admission handshake can implement [`Listener`] directly
-/// and assign a different priority to each accepted stream.
+/// Transports that authenticate each peer implement [`Listener`] directly.
 pub struct RawListener<L> {
     inner: L,
     peer: Peer,
-    requested_priority: Priority,
 }
 
 impl<L> RawListener<L> {
@@ -149,12 +150,8 @@ impl<L> RawListener<L> {
     ///
     /// This is intended for trusted/local raw listeners. Transports that
     /// authenticate each peer should implement [`Listener`] directly.
-    pub fn new(inner: L, peer: Peer, requested_priority: Priority) -> Self {
-        Self {
-            inner,
-            peer,
-            requested_priority,
-        }
+    pub fn new(inner: L, peer: Peer) -> Self {
+        Self { inner, peer }
     }
 
     /// Recover the wrapped listener.
@@ -173,7 +170,6 @@ where
         Ok(Accepted {
             stream: self.inner.accept_stream().await?,
             peer: self.peer.clone(),
-            requested_priority: self.requested_priority,
         })
     }
 }
@@ -307,11 +303,7 @@ async fn serve_client<S>(
 where
     S: ClientStream,
 {
-    let Accepted {
-        mut stream,
-        peer,
-        requested_priority,
-    } = accepted;
+    let Accepted { mut stream, peer } = accepted;
 
     let hello = tokio::select! {
         _ = shutdown.changed() => return Ok(()),
@@ -320,16 +312,20 @@ where
         }
     };
     if let Err(status) = hello.check() {
-        stream.write_hello_reply(status).await?;
+        stream.write_hello_reply(status, Priority(0)).await?;
         return Err(ConnectionError::Refused(status));
     }
     let Some(_guard) = registry.register() else {
         tracing::warn!(uid = peer.uid, "connection limit reached; rejecting client");
-        stream.write_hello_reply(HelloStatus::Busy).await?;
+        stream
+            .write_hello_reply(HelloStatus::Busy, Priority(0))
+            .await?;
         return Err(ConnectionError::Refused(HelloStatus::Busy));
     };
-    let client = broker.admit(peer, requested_priority);
-    stream.write_hello_reply(HelloStatus::Accepted).await?;
+    let client = broker.admit(peer, hello.priority);
+    stream
+        .write_hello_reply(HelloStatus::Accepted, client.priority())
+        .await?;
 
     serve_connection(stream, client, max_command_size, shutdown).await
 }
@@ -523,7 +519,6 @@ mod tests {
         Ok(Accepted {
             stream,
             peer: Peer::new(1000, 100),
-            requested_priority: Priority(4),
         })
     }
 
@@ -561,10 +556,10 @@ mod tests {
         ));
 
         // The client accepted after both errors is served.
-        client.write_all(b"TPXH\0\x01\0\0").await.unwrap();
-        let mut reply = [0u8; 8];
+        client.write_all(b"TPXH\0\x01\0\0\0\0\0\x04").await.unwrap();
+        let mut reply = [0u8; 12];
         client.read_exact(&mut reply).await.unwrap();
-        assert_eq!(&reply, b"TPXH\0\x01\0\0");
+        assert_eq!(&reply, b"TPXH\0\x01\0\0\0\0\0\x04");
 
         shutdown.send(true).unwrap();
         server.await.unwrap().unwrap();

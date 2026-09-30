@@ -31,13 +31,6 @@ use crate::upstream::{SessionId, Upstream, UpstreamError};
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, PartialOrd, Ord)]
 pub struct Priority(pub i32);
 
-impl Priority {
-    /// Request the highest possible priority.
-    ///
-    /// Admission policy should cap this to the maximum allowed for the peer.
-    pub const MAX: Self = Self(i32::MAX);
-}
-
 /// Handle to the TPM worker, used to open client sessions.
 #[derive(Clone)]
 pub struct CommandScheduler {

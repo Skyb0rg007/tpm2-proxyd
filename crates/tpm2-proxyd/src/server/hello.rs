@@ -5,15 +5,21 @@
 //! The hello: the first message on every client connection.
 //!
 //! Before its first TPM command, a client sends a [`Hello`] naming the protocol
-//! version and the options it wants, and the server answers with a
-//! [`HelloStatus`]. Only after an accepted hello does the connection carry the
+//! version, the options it wants, and the scheduling priority it requests. The
+//! server answers with a [`HelloStatus`] and the priority it granted: the
+//! request capped by the policy for the peer, fixed for the connection's
+//! lifetime. Only after an accepted hello does the connection carry the
 //! self-framing TPM command/response stream. Fields are big-endian, like TPM
 //! fields:
 //!
 //! ```text
-//! client → server:  magic "TPXH" (4) | version u16 | flags u16
-//! server → client:  magic "TPXH" (4) | version u16 | status u16
+//! client → server:  magic "TPXH" (4) | version u16 | flags u16  | priority i32
+//! server → client:  magic "TPXH" (4) | version u16 | status u16 | priority i32
 //! ```
+//!
+//! Higher priorities run first. A client that doesn't care asks for
+//! `i32::MAX`, the highest the policy allows it. A refusal's reply carries
+//! priority 0.
 //!
 //! A connection that doesn't start with the magic isn't speaking this
 //! protocol, so the server closes it without replying. Every other refusal gets
@@ -25,12 +31,14 @@
 
 use std::io;
 
+use crate::scheduler::Priority;
+
 /// Magic that opens both the hello and its reply.
 pub const MAGIC: [u8; 4] = *b"TPXH";
 /// Protocol version this server speaks.
 pub const VERSION: u16 = 1;
 /// Size of the hello and of its reply.
-pub const SIZE: usize = 8;
+pub const SIZE: usize = 12;
 /// Flags this server understands. None are defined yet; auto-encryption
 /// (`docs/auto-encrypt.md`) is expected to be the first.
 const KNOWN_FLAGS: u16 = 0;
@@ -42,6 +50,8 @@ pub struct Hello {
     pub version: u16,
     /// Options the client requests.
     pub flags: u16,
+    /// Scheduling priority the client requests, before the policy cap.
+    pub priority: Priority,
 }
 
 impl Hello {
@@ -56,6 +66,9 @@ impl Hello {
         Ok(Self {
             version: u16::from_be_bytes([bytes[4], bytes[5]]),
             flags: u16::from_be_bytes([bytes[6], bytes[7]]),
+            priority: Priority(i32::from_be_bytes([
+                bytes[8], bytes[9], bytes[10], bytes[11],
+            ])),
         })
     }
 
@@ -82,12 +95,13 @@ pub enum HelloStatus {
 }
 
 impl HelloStatus {
-    /// Encode the reply carrying this status.
-    pub fn reply(self) -> [u8; SIZE] {
+    /// Encode the reply carrying this status and the granted `priority`.
+    pub fn reply(self, priority: Priority) -> [u8; SIZE] {
         let mut bytes = [0; SIZE];
         bytes[..4].copy_from_slice(&MAGIC);
         bytes[4..6].copy_from_slice(&VERSION.to_be_bytes());
-        bytes[6..].copy_from_slice(&(self as u16).to_be_bytes());
+        bytes[6..8].copy_from_slice(&(self as u16).to_be_bytes());
+        bytes[8..].copy_from_slice(&priority.0.to_be_bytes());
         bytes
     }
 }

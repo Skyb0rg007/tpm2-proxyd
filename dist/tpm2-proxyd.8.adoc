@@ -37,6 +37,16 @@ example:
 --tcti=proxy:/run/tpm2-proxyd/tpm2-proxyd.sock
 ----
 
+The module's config string is either a bare socket path or comma-separated
+settings, *path=*_SOCKET_ and *priority=*_N_. The hello requests priority _N_
+(default: the highest allowed), and the daemon grants it up to the policy's cap
+for the connecting user. Higher priorities run first, and the grant is fixed
+for the connection's lifetime:
+
+----
+--tcti=proxy:path=/run/tpm2-proxyd/tpm2-proxyd.sock,priority=0
+----
+
 == Options
 
 *--config*=_PATH_::

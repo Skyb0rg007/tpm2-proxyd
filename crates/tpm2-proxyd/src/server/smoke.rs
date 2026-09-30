@@ -32,11 +32,31 @@ const GET_TEST_RESULT: u32 = 0x17c;
 const GET_CAPABILITY: u32 = 0x17a;
 const TPM_RC_FAILURE: u32 = 0x101;
 
-/// Version 1 hello with no flags.
-const HELLO: [u8; 8] = *b"TPXH\0\x01\0\0";
-const ACCEPTED: [u8; 8] = *b"TPXH\0\x01\0\0";
-const UNSUPPORTED: [u8; 8] = *b"TPXH\0\x01\0\x01";
-const BUSY: [u8; 8] = *b"TPXH\0\x01\0\x02";
+/// Priority cap the test policy gives every peer.
+const MAX_PRIORITY: i32 = 10;
+
+/// Version 1 hello with no flags, requesting `priority`.
+fn hello(priority: i32) -> [u8; 12] {
+    hello_bytes(1, 0, priority)
+}
+
+fn hello_bytes(version: u16, flags: u16, priority: i32) -> [u8; 12] {
+    let mut bytes = [0u8; 12];
+    bytes[..4].copy_from_slice(b"TPXH");
+    bytes[4..6].copy_from_slice(&version.to_be_bytes());
+    bytes[6..8].copy_from_slice(&flags.to_be_bytes());
+    bytes[8..].copy_from_slice(&priority.to_be_bytes());
+    bytes
+}
+
+/// Version 1 reply with `status` and the granted `priority`.
+fn reply(status: u16, priority: i32) -> [u8; 12] {
+    hello_bytes(1, status, priority)
+}
+
+const ACCEPTED: u16 = 0;
+const UNSUPPORTED: u16 = 1;
+const BUSY: u16 = 2;
 
 /// Fake TPM: `GetTestResult` fails with a TPM error code, everything else
 /// succeeds with a response echoing the command code into its body.
@@ -80,8 +100,8 @@ fn error_response(rc: u32) -> Vec<u8> {
     bytes
 }
 
-async fn read_hello_reply(stream: &mut UnixStream) -> [u8; 8] {
-    let mut reply = [0u8; 8];
+async fn read_hello_reply(stream: &mut UnixStream) -> [u8; 12] {
+    let mut reply = [0u8; 12];
     stream.read_exact(&mut reply).await.unwrap();
     reply
 }
@@ -116,11 +136,12 @@ async fn read_packet(stream: &mut UnixStream) -> Option<Vec<u8>> {
     Some(packet)
 }
 
-/// Policy allowing only `GetRandom` and `GetTestResult` for any peer.
+/// Policy allowing only `GetRandom` and `GetTestResult` for any peer, at
+/// priorities up to [`MAX_PRIORITY`].
 fn policy() -> Policy {
     Policy::new(PolicyConfig {
         default_decision: Decision::Deny,
-        default_max_priority: i32::MAX,
+        default_max_priority: MAX_PRIORITY,
         command_rules: vec![CommandRule {
             subject: Subject::default(),
             commands: vec![
@@ -170,11 +191,14 @@ impl Harness {
         UnixStream::connect(&self.socket).await.unwrap()
     }
 
-    /// Connect and complete the hello.
+    /// Connect and complete the hello, requesting the highest priority.
     async fn connect(&self) -> UnixStream {
         let mut stream = self.connect_raw().await;
-        stream.write_all(&HELLO).await.unwrap();
-        assert_eq!(read_hello_reply(&mut stream).await, ACCEPTED);
+        stream.write_all(&hello(i32::MAX)).await.unwrap();
+        assert_eq!(
+            read_hello_reply(&mut stream).await,
+            reply(ACCEPTED, MAX_PRIORITY)
+        );
         stream
     }
 
@@ -254,8 +278,8 @@ async fn enforces_the_connection_cap() {
 
     // A second connection is refused as busy, then closed.
     let mut second = harness.connect_raw().await;
-    second.write_all(&HELLO).await.unwrap();
-    assert_eq!(read_hello_reply(&mut second).await, BUSY);
+    second.write_all(&hello(i32::MAX)).await.unwrap();
+    assert_eq!(read_hello_reply(&mut second).await, reply(BUSY, 0));
     assert_closed(&mut second).await;
 
     // The first connection still works.
@@ -272,15 +296,39 @@ async fn enforces_the_connection_cap() {
 #[tokio::test]
 async fn refuses_unsupported_hellos() {
     let harness = Harness::start(0);
-    let cases: [(&str, [u8; 8]); 2] = [
-        ("unknown version", *b"TPXH\0\x02\0\0"),
-        ("unknown flag", *b"TPXH\0\x01\0\x01"),
+    let cases = [
+        ("unknown version", hello_bytes(2, 0, 0)),
+        ("unknown flag", hello_bytes(1, 1, 0)),
     ];
     for (name, hello) in cases {
         let mut client = harness.connect_raw().await;
         client.write_all(&hello).await.unwrap();
-        assert_eq!(read_hello_reply(&mut client).await, UNSUPPORTED, "{name}");
+        assert_eq!(
+            read_hello_reply(&mut client).await,
+            reply(UNSUPPORTED, 0),
+            "{name}"
+        );
         assert_closed(&mut client).await;
+    }
+    harness.shutdown().await;
+}
+
+#[tokio::test]
+async fn hello_reply_grants_the_requested_priority_up_to_the_cap() {
+    let harness = Harness::start(0);
+    let cases = [
+        ("below the cap", 3, 3),
+        ("negative", -5, -5),
+        ("above the cap", MAX_PRIORITY + 1, MAX_PRIORITY),
+    ];
+    for (name, requested, granted) in cases {
+        let mut client = harness.connect_raw().await;
+        client.write_all(&hello(requested)).await.unwrap();
+        assert_eq!(
+            read_hello_reply(&mut client).await,
+            reply(ACCEPTED, granted),
+            "{name}"
+        );
     }
     harness.shutdown().await;
 }
