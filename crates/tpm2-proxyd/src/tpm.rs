@@ -97,6 +97,16 @@ impl Command {
 pub struct Response(Vec<u8>);
 
 impl Response {
+    /// A header-only response carrying `code`, for errors the proxy reports
+    /// itself instead of forwarding the command.
+    pub fn error(code: u32) -> Self {
+        let mut bytes = Vec::with_capacity(HEADER_SIZE);
+        bytes.extend_from_slice(&TpmSt::NoSessions.value().to_be_bytes());
+        bytes.extend_from_slice(&(HEADER_SIZE as u32).to_be_bytes());
+        bytes.extend_from_slice(&code.to_be_bytes());
+        Self(bytes)
+    }
+
     /// Validate a complete TPM response.
     pub fn parse(bytes: Vec<u8>, max_size: usize) -> Result<Self, ParseError> {
         let size = parse_packet_size(&bytes, max_size)?;

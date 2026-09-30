@@ -237,14 +237,24 @@ async fn forwards_allowed_commands_and_relays_tpm_errors() {
 }
 
 #[tokio::test]
-async fn denied_command_closes_the_connection() {
+async fn denied_command_gets_an_error_response() {
     let harness = Harness::start(0);
     let mut client = harness.connect().await;
 
+    // The policy denies the command: the client gets TPM_RC_COMMAND_CODE in
+    // the resource-manager layer, and the connection stays usable.
     client.write_all(&command(GET_CAPABILITY)).await.unwrap();
-    // The policy denies the command, so the server closes the connection
-    // without replying.
-    assert!(read_packet(&mut client).await.is_none());
+    assert_eq!(
+        read_packet(&mut client).await.unwrap(),
+        error_response(0x000b_0143)
+    );
+    client.write_all(&command(GET_RANDOM)).await.unwrap();
+    assert_eq!(
+        read_packet(&mut client).await.unwrap(),
+        success_response(GET_RANDOM)
+    );
+
+    drop(client);
 
     harness.shutdown().await;
 }

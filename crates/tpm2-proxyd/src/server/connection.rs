@@ -362,7 +362,15 @@ where
                 match command? {
                     None => break,
                     Some(command) => {
-                        let response = client.execute(command).await?;
+                        let response = match client.execute(command).await {
+                            Ok(response) => response,
+                            // The client gets an error response and may carry
+                            // on.
+                            Err(BrokerError::Denied { denial, .. }) => {
+                                Response::error(denial.response_code())
+                            }
+                            Err(error) => return Err(error.into()),
+                        };
                         stream.write_response(&response).await?;
                     }
                 }
@@ -477,7 +485,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn denied_command_is_not_forwarded() {
+    async fn denied_command_gets_an_error_response_and_is_not_forwarded() {
         let commands = Arc::new(Mutex::new(Vec::new()));
         let scheduler = CommandScheduler::start(
             EchoUpstream {
@@ -497,14 +505,17 @@ mod tests {
             shutdown_rx,
         ));
 
-        client.write_all(&command(0x17b)).await.unwrap();
-        assert!(matches!(
-            server_task.await.unwrap(),
-            Err(ConnectionError::Broker(BrokerError::Denied {
-                command_code: 0x17b,
-                ..
-            }))
-        ));
+        // Each denial is answered, and the connection stays open.
+        for code in [0x17b, 0x17a] {
+            client.write_all(&command(code)).await.unwrap();
+            assert_eq!(
+                read_packet(&mut client).await,
+                Response::error(0x000b_0143).as_bytes()
+            );
+        }
+        client.shutdown().await.unwrap();
+
+        server_task.await.unwrap().unwrap();
         assert!(commands.lock().unwrap().is_empty());
     }
 

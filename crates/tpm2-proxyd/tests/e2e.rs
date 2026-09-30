@@ -102,39 +102,39 @@ fn relays_tpm_error_responses() {
     assert!(common::is_success(&response));
 }
 
-/// Commands the policy does not allow are blocked by the proxy, which closes the
-/// connection without forwarding them to the TPM.
+/// Commands the policy does not allow are blocked by the proxy, which answers
+/// them with an error instead of forwarding them to the TPM.
 #[test]
 fn policy_blocks_disallowed_commands() {
     let env = common::TestEnv::start(
         &common::policy_for_current_user("random"),
         &[("random", r#"{"commands": ["TPM_CC_GetRandom"]}"#)],
     );
+    let mut client = env.connect();
 
     // The allowed command works.
-    let mut allowed = env.connect();
-    let response = allowed
+    let response = client
         .transact(&common::get_random(8))
         .expect("GetRandom is allowed");
     assert!(common::is_success(&response));
 
-    // A disallowed command is denied: the proxy closes the connection.
-    let mut blocked = env.connect();
-    assert!(
-        blocked
-            .transact(&common::get_capability(cap::TPM_PROPERTIES, 0x100, 1))
-            .is_none(),
+    // A disallowed command is answered with an error.
+    let response = client
+        .transact(&common::get_capability(cap::TPM_PROPERTIES, 0x100, 1))
+        .expect("the proxy answers a denied command");
+    assert_eq!(
+        common::response_code(&response),
+        common::RC_COMMAND_DENIED,
         "GetCapability should be blocked by policy",
     );
 
-    // A fresh connection can still run allowed commands afterwards.
-    let mut again = env.connect();
-    assert!(again.transact(&common::get_random(8)).is_some());
+    // The same connection can still run allowed commands afterwards.
+    assert!(client.transact(&common::get_random(8)).is_some());
 }
 
 /// The `standard` profile shipped in `dist/profiles` loads, allows ordinary
-/// commands, and refuses commands that change shared TPM state or touch
-/// handles outside the caller's connection.
+/// commands on the caller's own objects, and refuses commands that change
+/// shared TPM state or touch handles outside the caller's connection.
 #[test]
 fn shipped_standard_profile() {
     let standard = std::fs::read_to_string(concat!(
@@ -146,8 +146,8 @@ fn shipped_standard_profile() {
         &common::policy_for_current_user("standard"),
         &[("standard", &standard)],
     );
-
     let mut client = env.connect();
+
     let response = client.transact(&common::get_random(8)).unwrap();
     assert!(common::is_success(&response));
     let response = client
@@ -156,15 +156,14 @@ fn shipped_standard_profile() {
     assert!(common::is_success(&response));
 
     // TPM2_Clear, authorized by the lockout hierarchy: not in the profile.
-    assert!(env.connect().transact(&common::clear()).is_none());
+    let clear = common::clear();
+    let response = client.transact(&clear).unwrap();
+    assert_eq!(common::response_code(&response), common::RC_COMMAND_DENIED);
 
     // TPM2_ReadPublic of a persistent handle: an allowed command, but the
     // profile doesn't allow persistent handles.
-    assert!(
-        env.connect()
-            .transact(&common::read_public(0x8100_0001))
-            .is_none()
-    );
+    let response = client.transact(&common::read_public(0x8100_0001)).unwrap();
+    assert_eq!(common::response_code(&response), common::RC_HANDLE_1_DENIED);
 }
 
 /// Unrecognized command codes are rejected at the proxy's parse boundary and

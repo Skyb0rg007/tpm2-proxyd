@@ -130,5 +130,10 @@ if tpm2_readpublic --tcti="$tcti" -c 0x81000001 >/dev/null 2>"$workdir/err"; the
   echo "FAIL: reading persistent handle 0x81000001 was not refused" >&2
   exit 1
 fi
+if ! grep -q "rmt:handle(1)" "$workdir/err"; then
+  echo "FAIL: expected a resource-manager handle error, got:" >&2
+  cat "$workdir/err" >&2
+  exit 1
+fi
 
 echo "PASS ($MODE): proxied TPM2_GetRandom returned $out; key workflow ran; persistent handle refused"

@@ -93,6 +93,11 @@ per-client sessions) → `upstream` (the TPM).
   already isolates transient objects and sessions, so profiles only need to
   keep users away from shared state (persistent handles, NV, hierarchies, PCRs,
   clock, DA). Don't add in-memory ownership tracking for transient handles.
+- A denied command gets a header-only response with a TPM-format code in the
+  resource-manager layer (`Denial::response_code`: `TPM_RC_COMMAND_CODE`, or
+  `TPM_RC_HANDLE` + position) and the connection stays open. tpm2-tss decodes
+  layer 11 as TPM-format ("rmt"), which is why it's not a TSS-format
+  `TSS2_RESMGR_RC_NOT_PERMITTED`.
 - **Planned:** `docs/policy-language.md` (declarative, default-deny YAML policy
   language) and `dist/policy.safe-limited.yaml` (an example in it). Supporting
   analysis is in `docs/command-policy.md`, `docs/unprivileged-command-policy.md`

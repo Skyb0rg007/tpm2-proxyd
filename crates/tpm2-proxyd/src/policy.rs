@@ -115,6 +115,29 @@ pub enum Denial {
     },
 }
 
+impl Denial {
+    /// The response code the client gets for this denial.
+    ///
+    /// It's a TPM-format code in the resource-manager layer
+    /// (`TSS2_RESMGR_RC_LAYER`), which tpm2-tss decodes as a TPM error the
+    /// resource manager reported: `TPM_RC_COMMAND_CODE` for a command the peer
+    /// may not run, `TPM_RC_HANDLE` with the handle's position for a handle it
+    /// may not use.
+    pub fn response_code(&self) -> u32 {
+        const RESMGR_LAYER: u32 = 11 << 16;
+        const TPM_RC_COMMAND_CODE: u32 = 0x143;
+        const TPM_RC_HANDLE: u32 = 0x08b;
+        RESMGR_LAYER
+            | match self {
+                Self::Refused {
+                    refusal: Refusal::Handle { position, .. },
+                    ..
+                } => TPM_RC_HANDLE | ((*position as u32) << 8),
+                _ => TPM_RC_COMMAND_CODE,
+            }
+    }
+}
+
 impl fmt::Display for Denial {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
@@ -355,6 +378,24 @@ mod tests {
             Ok(())
         );
         assert!(matches!(missing, Err(Error::Read { .. })), "{missing:?}");
+    }
+
+    #[test]
+    fn denials_map_to_resource_manager_response_codes() {
+        let refused = |refusal| Denial::Refused {
+            profile: "test".into(),
+            refusal,
+        };
+        assert_eq!(Denial::NoProfile.response_code(), 0x000b_0143);
+        assert_eq!(refused(Refusal::Command).response_code(), 0x000b_0143);
+        assert_eq!(
+            refused(Refusal::Handle {
+                position: 2,
+                handle: 0x8100_0001
+            })
+            .response_code(),
+            0x000b_028b
+        );
     }
 
     #[test]

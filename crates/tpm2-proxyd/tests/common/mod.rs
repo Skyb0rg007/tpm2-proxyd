@@ -139,6 +139,13 @@ pub fn current_uid() -> u32 {
     getuid().as_raw()
 }
 
+/// The proxy's response to a command the policy denies: `TPM_RC_COMMAND_CODE`
+/// in the resource-manager layer.
+pub const RC_COMMAND_DENIED: u32 = 0x000b_0143;
+/// The proxy's response to a command whose first handle the policy denies:
+/// `TPM_RC_HANDLE + TPM_RC_1` in the resource-manager layer.
+pub const RC_HANDLE_1_DENIED: u32 = 0x000b_018b;
+
 /// A profile allowing every command with any handles.
 pub const ALL_PROFILE: (&str, &str) = ("all", r#"{"commands": ["*"], "handles": ["*"]}"#);
 
@@ -282,7 +289,7 @@ impl Client {
     /// Send a command and read its response.
     ///
     /// Returns `None` if the proxy closed the connection without replying — for
-    /// example when policy denies the command or the command code is rejected.
+    /// example when the command code is rejected.
     pub fn transact(&mut self, command: &[u8]) -> Option<Vec<u8>> {
         self.stream.write_all(command).ok()?;
         self.stream.flush().ok()?;

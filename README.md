@@ -135,7 +135,10 @@ Each connection gets its own `/dev/tpmrm0` handle, so the kernel resource
 manager keeps one client's transient objects and sessions out of another's
 reach.
 
-A denied command isn't forwarded, and the proxy closes the connection.
+A denied command isn't forwarded. The client gets an error response in the
+resource-manager layer, which tpm2-tools prints as, for example,
+`rmt:error(2.0): command code not supported` or `rmt:handle(1):the handle is not
+correct for the use`, and the connection stays open.
 
 Reload the policy and profiles after editing, without dropping connections:
 

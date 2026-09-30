@@ -76,4 +76,5 @@ To confirm policy denial, run a command the profile doesn't allow:
 tpm2_getcap --tcti=proxy:/tmp/tpm2-proxyd.sock properties-fixed
 ```
 
-It should fail without reaching the upstream TPM.
+It should fail with `rmt:error(2.0): command code not supported` without
+reaching the upstream TPM.
