@@ -69,7 +69,9 @@ sudo systemctl enable --now tpm2-proxyd.socket
 The `tpm2-proxyd.socket` unit owns the listening socket (`tss:tss`, mode
 `0666`), and the daemon starts on first connection via socket activation. Any
 local user may connect; the policy then decides, per connection, what that peer
-may run, and peers that match no rule are denied everything. Do **not** add
+may run, and peers that match no rule are denied everything. One user may hold
+at most 16 connections at once (`--max-connections-per-uid`), so no one user can
+take every slot. Do **not** add
 proxy users to `tss`: members of the TPM device group can open `/dev/tpmrm0`
 directly and bypass the proxy's policy. If your distribution's TPM group is not
 `tss`, edit `SupplementaryGroups=` in the service unit (and the socket's owner)

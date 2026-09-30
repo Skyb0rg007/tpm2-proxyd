@@ -315,12 +315,20 @@ where
         stream.write_hello_reply(status, Priority(0)).await?;
         return Err(ConnectionError::Refused(status));
     }
-    let Some(_guard) = registry.register() else {
-        tracing::warn!(uid = peer.uid, "connection limit reached; rejecting client");
-        stream
-            .write_hello_reply(HelloStatus::Busy, Priority(0))
-            .await?;
-        return Err(ConnectionError::Refused(HelloStatus::Busy));
+    let _guard = match registry.register(peer.uid) {
+        Ok(guard) => guard,
+        Err(full) => {
+            tracing::warn!(
+                uid = peer.uid,
+                pid = peer.pid,
+                ?full,
+                "connection limit reached; rejecting client"
+            );
+            stream
+                .write_hello_reply(HelloStatus::Busy, Priority(0))
+                .await?;
+            return Err(ConnectionError::Refused(HelloStatus::Busy));
+        }
     };
     let client = broker.admit(peer, hello.priority);
     stream
@@ -536,7 +544,7 @@ mod tests {
         let server = tokio::spawn(serve_listener(
             listener,
             broker,
-            ConnectionRegistry::new(0),
+            ConnectionRegistry::new(0, 0),
             DEFAULT_MAX_PACKET_SIZE,
             shutdown_rx,
         ));

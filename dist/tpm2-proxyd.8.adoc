@@ -77,6 +77,10 @@ Maximum number of commands queued for the upstream worker.
 *--max-connections*=_COUNT_::
 Maximum concurrent downstream connections. A value of 0 means unlimited.
 
+*--max-connections-per-uid*=_COUNT_::
+Maximum concurrent downstream connections from one user. The default is 16; a
+value of 0 means unlimited.
+
 *--command-timeout-secs*=_SECONDS_::
 Hard per-command timeout. The default is 120 seconds.
 

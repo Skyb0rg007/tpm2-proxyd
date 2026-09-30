@@ -36,7 +36,7 @@ Every connection opens with a **hello**, then carries TPM traffic:
    | --- | --- |
    | `0` | Accepted: the connection may send TPM commands. |
    | `1` | Unsupported: unknown version or flag. |
-   | `2` | Busy: the connection limit (`--max-connections`) is reached. |
+   | `2` | Busy: the connection limit (`--max-connections`, or `--max-connections-per-uid` for the peer's UID) is reached. |
 
    After any refusal the server closes the connection. A connection that
    doesn't open with the magic isn't speaking this protocol, so the server
@@ -161,7 +161,8 @@ order within the same priority, and never preempts an in-flight transaction. A
 **hard per-command timeout** is active (enforced by `tpm2-device`, configurable
 via `--command-timeout-secs`): a wedged TPM transaction is abandoned so the
 worker — and the clients queued behind it — recover. A **concurrent connection
-cap** (`--max-connections`) bounds resource use. Per-UID quotas and time-slice
+cap** (`--max-connections`) and a per-UID cap (`--max-connections-per-uid`)
+bound resource use. Per-UID quotas and time-slice
 accounting remain planned rather than active in this command path.
 
 - **Mutual exclusion.** Exactly one lease exists; holding it grants exclusive

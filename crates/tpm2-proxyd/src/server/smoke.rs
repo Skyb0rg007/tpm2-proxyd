@@ -169,7 +169,7 @@ impl Harness {
         ));
         let scheduler = CommandScheduler::start(FakeTpm, 8);
         let broker = Broker::new(policy(), scheduler);
-        let registry = ConnectionRegistry::new(max_connections);
+        let registry = ConnectionRegistry::new(max_connections, 0);
         let listener = RawTpmListener::bind_prepared(&socket).unwrap();
         let (shutdown, shutdown_rx) = watch::channel(false);
         let server = tokio::spawn(serve_listener(

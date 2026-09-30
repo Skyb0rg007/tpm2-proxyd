@@ -75,7 +75,10 @@ async fn run(options: cli::Options) -> anyhow::Result<()> {
 
     let (scheduler, upstream_label) = start_scheduler(&options).await?;
     let broker = broker::Broker::new(policy, scheduler);
-    let registry = server::registry::ConnectionRegistry::new(options.max_connections);
+    let registry = server::registry::ConnectionRegistry::new(
+        options.max_connections,
+        options.max_connections_per_uid,
+    );
 
     let listener = server::unix::RawTpmListener::from_systemd_or_bind(&options.socket)
         .with_context(|| format!("binding raw TPM socket {}", options.socket.display()))?;

@@ -16,6 +16,8 @@ pub const DEFAULT_SOCKET_PATH: &str = "/run/tpm2-proxyd/tpm2-proxyd.sock";
 pub const DEFAULT_UPSTREAM_TPM_PATH: &str = "/dev/tpmrm0";
 /// Default number of commands that may wait for the upstream worker.
 pub const DEFAULT_QUEUE_DEPTH: usize = 64;
+/// Default cap on concurrent connections from one UID.
+pub const DEFAULT_MAX_CONNECTIONS_PER_UID: usize = 16;
 /// Default hard per-command timeout, in seconds.
 pub const DEFAULT_COMMAND_TIMEOUT_SECS: u64 = 120;
 
@@ -86,6 +88,16 @@ pub struct Options {
         value_parser = clap::value_parser!(usize)
     )]
     pub max_connections: usize,
+    /// Maximum number of concurrent downstream connections from one UID
+    /// (0 = unlimited).
+    #[arg(
+        long,
+        require_equals = true,
+        value_name = "COUNT",
+        default_value_t = DEFAULT_MAX_CONNECTIONS_PER_UID,
+        value_parser = clap::value_parser!(usize)
+    )]
+    pub max_connections_per_uid: usize,
     /// Hard per-command timeout, in seconds.
     #[arg(
         long,
@@ -160,6 +172,10 @@ mod tests {
         assert_eq!(options.max_packet_size, crate::tpm::DEFAULT_MAX_PACKET_SIZE);
         assert_eq!(options.queue_depth, DEFAULT_QUEUE_DEPTH);
         assert_eq!(options.max_connections, 0);
+        assert_eq!(
+            options.max_connections_per_uid,
+            DEFAULT_MAX_CONNECTIONS_PER_UID
+        );
         assert_eq!(options.command_timeout_secs, DEFAULT_COMMAND_TIMEOUT_SECS);
     }
 
@@ -179,6 +195,7 @@ mod tests {
             "--upstream=/tmp/tpmrm0",
             "--max-packet-size=8192",
             "--queue-depth=32",
+            "--max-connections-per-uid=0",
         ])
         .unwrap();
 
@@ -186,6 +203,7 @@ mod tests {
         assert_eq!(options.upstream, PathBuf::from("/tmp/tpmrm0"));
         assert_eq!(options.max_packet_size, 8192);
         assert_eq!(options.queue_depth, 32);
+        assert_eq!(options.max_connections_per_uid, 0);
     }
 
     #[test]
