@@ -39,8 +39,7 @@ pub const MAGIC: [u8; 4] = *b"TPXH";
 pub const VERSION: u16 = 1;
 /// Size of the hello and of its reply.
 pub const SIZE: usize = 12;
-/// Flags this server understands. None are defined yet; auto-encryption
-/// (`docs/auto-encrypt.md`) is expected to be the first.
+/// Flags this server understands. None are defined yet.
 const KNOWN_FLAGS: u16 = 0;
 
 /// A client's hello.

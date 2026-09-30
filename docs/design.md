@@ -44,9 +44,8 @@ Every connection opens with a **hello**, then carries TPM traffic:
    within 10 seconds.
 
    No flags are defined yet, and unknown flags are refused rather than ignored,
-   so a client never silently loses an option it depends on. Per-connection
-   options such as transparent parameter encryption
-   ([auto-encrypt.md](auto-encrypt.md)) are expected to become flags.
+   so a client never silently loses an option it depends on. New per-connection
+   options are expected to become flags.
 2. **TPM commands.** After an accepted hello, the connection is a self-framing
    TPM command/response stream for the rest of its life: each command and
    response is sent verbatim, and the 10-byte TPM header carries the length.
