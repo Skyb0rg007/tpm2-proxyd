@@ -120,6 +120,11 @@ impl Response {
         Ok(Self(bytes))
     }
 
+    /// The response code from the header.
+    pub fn code(&self) -> u32 {
+        u32::from_be_bytes(self.0[6..10].try_into().expect("header is validated"))
+    }
+
     /// Complete encoded response.
     pub fn as_bytes(&self) -> &[u8] {
         &self.0

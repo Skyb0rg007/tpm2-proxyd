@@ -75,6 +75,10 @@ per-client sessions) → `upstream` (the TPM).
   flushes whatever they leave loaded. Don't go back to one shared fd: abandoned
   objects pile up and exhaust the kernel RM's 3-objects-per-fd limit. The swtpm
   upstream can't isolate sessions and ignores them.
+- `lockout.rs` counts `TPM_RC_AUTH_FAIL` responses (the ones that count
+  toward the TPM's dictionary-attack lockout) in total and per UID, and logs
+  them, warning past `--auth-failure-warn-threshold`. The broker records them
+  after each upstream response; the counts are in memory only.
 - `systemd` provides socket activation, `sd_notify` readiness, and watchdog.
   `SIGHUP` re-reads the policy file and its profiles and swaps them in
   atomically.

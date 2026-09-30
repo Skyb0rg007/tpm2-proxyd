@@ -87,6 +87,12 @@ Maximum concurrent downstream connections. A value of 0 means unlimited.
 Maximum concurrent downstream connections from one user. The default is 16; a
 value of 0 means unlimited.
 
+*--auth-failure-warn-threshold*=_COUNT_::
+The daemon counts the TPM's authorization failures that count toward its
+dictionary-attack lockout (*TPM_RC_AUTH_FAIL*), in total and per user, and logs
+each one. Once the total reaches _COUNT_, each further failure is logged as a
+warning. The default is 10; a value of 0 never warns.
+
 *--command-timeout-secs*=_SECONDS_::
 Hard per-command timeout. The default is 120 seconds.
 

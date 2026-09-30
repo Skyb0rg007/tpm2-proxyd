@@ -31,6 +31,8 @@
 mod broker;
 /// Command-line argument parsing.
 mod cli;
+/// Tracking of authorization failures toward the TPM's lockout.
+mod lockout;
 /// Access-control rule model, policy file loading, and evaluation engine.
 mod policy;
 /// Command profiles loaded from the profiles directory.
@@ -76,7 +78,11 @@ async fn run(options: cli::Options) -> anyhow::Result<()> {
     let policy = policy::Policy::load(&options.config)?;
 
     let (scheduler, upstream_label) = start_scheduler(&options).await?;
-    let broker = broker::Broker::new(policy, scheduler);
+    let broker = broker::Broker::new(
+        policy,
+        scheduler,
+        lockout::AuthFailures::new(options.auth_failure_warn_threshold),
+    );
     let registry = server::registry::ConnectionRegistry::new(
         options.max_connections,
         options.max_connections_per_uid,

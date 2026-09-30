@@ -98,6 +98,17 @@ pub struct Options {
         value_parser = clap::value_parser!(usize)
     )]
     pub max_connections_per_uid: usize,
+    /// Number of authorization failures toward the TPM's dictionary-attack
+    /// lockout after which each further failure is logged as a warning
+    /// (0 = never warn).
+    #[arg(
+        long,
+        require_equals = true,
+        value_name = "COUNT",
+        default_value_t = crate::lockout::DEFAULT_WARN_THRESHOLD,
+        value_parser = clap::value_parser!(u64)
+    )]
+    pub auth_failure_warn_threshold: u64,
     /// Hard per-command timeout, in seconds.
     #[arg(
         long,
@@ -172,6 +183,10 @@ mod tests {
         assert_eq!(options.max_packet_size, crate::tpm::DEFAULT_MAX_PACKET_SIZE);
         assert_eq!(options.queue_depth, DEFAULT_QUEUE_DEPTH);
         assert_eq!(options.max_connections, 0);
+        assert_eq!(
+            options.auth_failure_warn_threshold,
+            crate::lockout::DEFAULT_WARN_THRESHOLD
+        );
         assert_eq!(
             options.max_connections_per_uid,
             DEFAULT_MAX_CONNECTIONS_PER_UID

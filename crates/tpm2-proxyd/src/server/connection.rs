@@ -402,6 +402,7 @@ mod tests {
 
     use crate::{
         broker::Broker,
+        lockout::AuthFailures,
         policy::Policy,
         scheduler::CommandScheduler,
         tpm::{DEFAULT_MAX_PACKET_SIZE, HEADER_SIZE},
@@ -462,7 +463,7 @@ mod tests {
             },
             8,
         );
-        let broker = Broker::new(Policy::allow_all(), scheduler);
+        let broker = Broker::new(Policy::allow_all(), scheduler, AuthFailures::new(0));
         let client_context = broker.admit(Peer::new(1000, 100), Priority(4));
         let (mut client, server) = tokio::io::duplex(256);
         let (_shutdown_tx, shutdown_rx) = watch::channel(false);
@@ -493,7 +494,11 @@ mod tests {
             },
             8,
         );
-        let broker = Broker::new(Policy::from_json("{}", &[]), scheduler);
+        let broker = Broker::new(
+            Policy::from_json("{}", &[]),
+            scheduler,
+            AuthFailures::new(0),
+        );
         let client_context = broker.admit(Peer::new(1000, 100), Priority(4));
         let (mut client, server) = tokio::io::duplex(256);
         let (_shutdown_tx, shutdown_rx) = watch::channel(false);
@@ -551,7 +556,7 @@ mod tests {
             },
             8,
         );
-        let broker = Broker::new(Policy::allow_all(), scheduler);
+        let broker = Broker::new(Policy::allow_all(), scheduler, AuthFailures::new(0));
         let (shutdown, shutdown_rx) = watch::channel(false);
         let server = tokio::spawn(serve_listener(
             listener,

@@ -7,7 +7,9 @@
 //! The broker is the only path from a downstream client to the command
 //! scheduler. It caps the connection priority and opens the client's upstream
 //! session once at admission, checks every parsed command against the current
-//! policy, and only then submits it to the serialized upstream worker.
+//! policy, and only then submits it to the serialized upstream worker. It also
+//! counts the authorization failures in the TPM's responses that push it toward
+//! dictionary-attack lockout (see [`crate::lockout`]).
 
 #![allow(dead_code)] // Main/config wiring is implemented in a later change.
 
@@ -17,6 +19,7 @@ use std::sync::{
 };
 
 use crate::{
+    lockout::{self, AuthFailures},
     policy::{Denial, Policy},
     scheduler::{CommandScheduler, ExecuteError, Priority, Session},
     server::peer::Peer,
@@ -29,16 +32,25 @@ pub struct Broker {
     policy: Arc<RwLock<Policy>>,
     generation: Arc<AtomicU64>,
     scheduler: CommandScheduler,
+    auth_failures: Arc<AuthFailures>,
 }
 
 impl Broker {
-    /// Construct a broker from an active policy and command scheduler.
-    pub fn new(policy: Policy, scheduler: CommandScheduler) -> Self {
+    /// Construct a broker from an active policy, command scheduler, and
+    /// lockout failure tracker.
+    pub fn new(policy: Policy, scheduler: CommandScheduler, auth_failures: AuthFailures) -> Self {
         Self {
             policy: Arc::new(RwLock::new(policy)),
             generation: Arc::new(AtomicU64::new(1)),
             scheduler,
+            auth_failures: Arc::new(auth_failures),
         }
+    }
+
+    /// Authorization failures counted toward the TPM's lockout.
+    #[cfg(test)]
+    pub fn auth_failures(&self) -> &AuthFailures {
+        &self.auth_failures
     }
 
     /// Atomically replace the active policy for future decisions.
@@ -116,10 +128,12 @@ impl Client {
             });
         }
 
-        self.session
-            .execute(self.priority, command)
-            .await
-            .map_err(Into::into)
+        let code = command.code();
+        let response = self.session.execute(self.priority, command).await?;
+        if lockout::is_auth_failure(response.code()) {
+            self.broker.auth_failures.record(&self.peer, code);
+        }
+        Ok(response)
     }
 }
 
@@ -191,7 +205,11 @@ mod tests {
             },
             4,
         );
-        let broker = Broker::new(Policy::from_json("{}", &[]), scheduler);
+        let broker = Broker::new(
+            Policy::from_json("{}", &[]),
+            scheduler,
+            AuthFailures::new(0),
+        );
         let client = broker.admit(Peer::new(1000, 100), Priority(10));
 
         assert!(matches!(
@@ -214,7 +232,11 @@ mod tests {
             },
             4,
         );
-        let broker = Broker::new(Policy::from_json("{}", &[]), scheduler);
+        let broker = Broker::new(
+            Policy::from_json("{}", &[]),
+            scheduler,
+            AuthFailures::new(0),
+        );
         let client = broker.admit(Peer::new(1000, 100), Priority(0));
 
         assert!(client.execute(command(0x17b)).await.is_err());
@@ -236,11 +258,68 @@ mod tests {
             r#"{"rules": [{"subject": {"uid": 1000}, "profile": "all", "max_priority": 3}]}"#,
             &[("all", r#"{"commands": ["*"]}"#)],
         );
-        let broker = Broker::new(policy, scheduler);
+        let broker = Broker::new(policy, scheduler, AuthFailures::new(0));
 
         assert_eq!(
             broker.admit(Peer::new(1000, 100), Priority(50)).priority(),
             Priority(3)
         );
+    }
+
+    /// Answers every command with `TPM_RC_AUTH_FAIL` for session 1.
+    struct AuthFailUpstream;
+
+    #[async_trait::async_trait]
+    impl Upstream for AuthFailUpstream {
+        async fn transact(
+            &mut self,
+            _session: SessionId,
+            _command: &Command,
+        ) -> Result<Response, UpstreamError> {
+            let mut response = Vec::from(0x8001u16.to_be_bytes());
+            response.extend_from_slice(&10u32.to_be_bytes());
+            response.extend_from_slice(&0x98eu32.to_be_bytes());
+            Ok(Response::parse(response, DEFAULT_MAX_PACKET_SIZE).unwrap())
+        }
+    }
+
+    #[tokio::test]
+    async fn counts_lockout_failures_per_uid() {
+        let broker = Broker::new(
+            Policy::allow_all(),
+            CommandScheduler::start(AuthFailUpstream, 4),
+            AuthFailures::new(0),
+        );
+        let first = broker.admit(Peer::new(1000, 100), Priority(0));
+        let second = broker.admit(Peer::new(1001, 100), Priority(0));
+
+        // The failure is still relayed to the client.
+        let response = first.execute(command(0x17b)).await.unwrap();
+        assert_eq!(response.code(), 0x98e);
+        first.execute(command(0x17b)).await.unwrap();
+        second.execute(command(0x17b)).await.unwrap();
+
+        assert_eq!(broker.auth_failures().total(), 3);
+        assert_eq!(broker.auth_failures().for_uid(1000), 2);
+        assert_eq!(broker.auth_failures().for_uid(1001), 1);
+    }
+
+    #[tokio::test]
+    async fn successful_commands_are_not_counted() {
+        let broker = Broker::new(
+            Policy::allow_all(),
+            CommandScheduler::start(
+                CountingUpstream {
+                    count: Arc::new(AtomicUsize::new(0)),
+                    codes: Arc::new(Mutex::new(Vec::new())),
+                },
+                4,
+            ),
+            AuthFailures::new(0),
+        );
+        let client = broker.admit(Peer::new(1000, 100), Priority(0));
+        client.execute(command(0x17b)).await.unwrap();
+
+        assert_eq!(broker.auth_failures().total(), 0);
     }
 }

@@ -19,6 +19,7 @@ use tokio::net::UnixStream;
 use tokio::sync::watch;
 
 use crate::broker::Broker;
+use crate::lockout::AuthFailures;
 use crate::policy::Policy;
 use crate::scheduler::CommandScheduler;
 use crate::server::connection::{HELLO_TIMEOUT, serve_listener};
@@ -162,7 +163,7 @@ impl Harness {
             fastrand_suffix(),
         ));
         let scheduler = CommandScheduler::start(FakeTpm, 8);
-        let broker = Broker::new(policy(), scheduler);
+        let broker = Broker::new(policy(), scheduler, AuthFailures::new(0));
         let registry = ConnectionRegistry::new(max_connections, 0);
         let listener = RawTpmListener::bind_prepared(&socket).unwrap();
         let (shutdown, shutdown_rx) = watch::channel(false);
