@@ -1,16 +1,20 @@
 {
-  "users": [
+  "default_decision": "deny",
+  "default_max_priority": 0,
+  "command_rules": [
     {
-      "uid": 1000,
+      "subject": { "uid": 1000 },
       "commands": [379, 378],
-      "priority": 5
+      "decision": "allow"
+    },
+    {
+      "subject": { "gid": 1001 },
+      "commands": [],
+      "decision": "allow"
     }
   ],
-  "groups": [
-    {
-      "gid": 1001,
-      "commands": [],
-      "priority": 1
-    }
+  "priority_rules": [
+    { "subject": { "uid": 1000 }, "max_priority": 5 },
+    { "subject": { "gid": 1001 }, "max_priority": 1 }
   ]
 }

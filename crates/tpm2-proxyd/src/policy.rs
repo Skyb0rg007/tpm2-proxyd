@@ -8,16 +8,20 @@
 //! wins. A rule may match a UID, a group, both, or every peer; an empty command
 //! list matches every TPM command. Priority rules use the same subject matching
 //! and cap the priority fixed for a connection at admission time.
+//!
+//! The on-disk policy file (`--config=<path>`) is the JSON form of
+//! [`PolicyConfig`]; `SIGHUP` reloads it. `docs/policy-language.md` describes
+//! its planned replacement.
 
-#![allow(dead_code)] // Main/config wiring is implemented in a later change.
+use std::{fs, io, path::Path};
 
-use serde::{Deserialize, Serialize};
+use serde::Deserialize;
 use tpm2_protocol::data::TpmCc;
 
 use crate::{scheduler::Priority, server::peer::Peer, tpm::Command};
 
 /// Rule decision.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Deserialize, Serialize)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum Decision {
     /// Permit the command.
@@ -27,7 +31,7 @@ pub enum Decision {
 }
 
 /// Subject selector shared by command and priority rules.
-#[derive(Clone, Debug, Default, PartialEq, Eq, Deserialize, Serialize)]
+#[derive(Clone, Debug, Default, PartialEq, Eq, Deserialize)]
 #[serde(default, deny_unknown_fields)]
 pub struct Subject {
     /// Match only this UID.
@@ -44,7 +48,7 @@ impl Subject {
 }
 
 /// One ordered command authorization rule.
-#[derive(Clone, Debug, PartialEq, Eq, Deserialize, Serialize)]
+#[derive(Clone, Debug, PartialEq, Eq, Deserialize)]
 #[serde(default, deny_unknown_fields)]
 pub struct CommandRule {
     /// Peer selector.
@@ -66,22 +70,14 @@ impl Default for CommandRule {
     }
 }
 
-/// Serde adapter for command code lists: numeric codes on the wire, rejecting
+/// Serde adapter for command code lists: numeric codes in the file, rejecting
 /// any code `tpm2-protocol` does not recognize.
-pub(crate) mod command_codes {
-    use serde::{Deserialize, Deserializer, Serialize, Serializer};
+///
+/// Dropping an unrecognized code instead could leave a rule with an empty,
+/// match-everything command list.
+mod command_codes {
+    use serde::{Deserialize, Deserializer};
     use tpm2_protocol::data::TpmCc;
-
-    pub fn serialize<S>(commands: &[TpmCc], serializer: S) -> Result<S::Ok, S::Error>
-    where
-        S: Serializer,
-    {
-        commands
-            .iter()
-            .map(|command| command.value())
-            .collect::<Vec<_>>()
-            .serialize(serializer)
-    }
 
     pub fn deserialize<'de, D>(deserializer: D) -> Result<Vec<TpmCc>, D::Error>
     where
@@ -96,7 +92,7 @@ pub(crate) mod command_codes {
 }
 
 /// One ordered connection-priority cap rule.
-#[derive(Clone, Debug, Default, PartialEq, Eq, Deserialize, Serialize)]
+#[derive(Clone, Debug, Default, PartialEq, Eq, Deserialize)]
 #[serde(default, deny_unknown_fields)]
 pub struct PriorityRule {
     /// Peer selector.
@@ -105,8 +101,8 @@ pub struct PriorityRule {
     pub max_priority: i32,
 }
 
-/// Deserializable policy configuration.
-#[derive(Clone, Debug, PartialEq, Eq, Deserialize, Serialize)]
+/// Policy configuration, as loaded from the policy file.
+#[derive(Clone, Debug, PartialEq, Eq, Deserialize)]
 #[serde(default, deny_unknown_fields)]
 pub struct PolicyConfig {
     /// Decision when no command rule matches.
@@ -130,6 +126,43 @@ impl Default for PolicyConfig {
     }
 }
 
+/// Policy file load error.
+#[derive(Debug, thiserror::Error)]
+pub enum Error {
+    /// Reading the policy file failed.
+    #[error("failed to read policy {path}: {source}")]
+    Read {
+        /// Policy file path.
+        path: String,
+        /// Underlying I/O error.
+        source: io::Error,
+    },
+    /// Parsing the policy file failed.
+    #[error("failed to parse policy {path}: {source}")]
+    Parse {
+        /// Policy file path.
+        path: String,
+        /// Underlying JSON error.
+        source: serde_json::Error,
+    },
+}
+
+impl PolicyConfig {
+    /// Load a JSON policy file from disk.
+    pub fn load(path: impl AsRef<Path>) -> Result<Self, Error> {
+        let path = path.as_ref();
+        let display = path.display().to_string();
+        let data = fs::read_to_string(path).map_err(|source| Error::Read {
+            path: display.clone(),
+            source,
+        })?;
+        serde_json::from_str(&data).map_err(|source| Error::Parse {
+            path: display,
+            source,
+        })
+    }
+}
+
 /// Compiled policy evaluator.
 #[derive(Clone, Debug)]
 pub struct Policy {
@@ -142,7 +175,8 @@ impl Policy {
         Self { config }
     }
 
-    /// Convenience policy used by trusted/internal callers and tests.
+    /// Policy allowing every peer every command, for tests.
+    #[cfg(test)]
     pub fn allow_all() -> Self {
         Self::new(PolicyConfig {
             default_decision: Decision::Allow,
@@ -294,5 +328,40 @@ mod tests {
 
         assert_eq!(config.command_rules[0].commands, [TpmCc::GetRandom]);
         assert_eq!(config.priority_rules[0].max_priority, 5);
+    }
+
+    #[test]
+    fn rejects_unrecognized_command_codes() {
+        // 0x197 (TPM2_CertifyX509) is a real command tpm2-protocol lacks.
+        // Dropping it would leave an empty, allow-everything command list.
+        let err = serde_json::from_str::<PolicyConfig>(
+            r#"{
+                "command_rules": [{
+                    "subject": {"uid": 1000},
+                    "commands": [407],
+                    "decision": "allow"
+                }]
+            }"#,
+        )
+        .unwrap_err();
+
+        assert!(err.is_data(), "{err}");
+    }
+
+    #[test]
+    fn rejects_unknown_fields() {
+        let err = serde_json::from_str::<PolicyConfig>(
+            r#"{
+                "command_rules": [{
+                    "subject": {"uid": 1000},
+                    "commands": [379],
+                    "decision": "allow",
+                    "priority": 7
+                }]
+            }"#,
+        )
+        .unwrap_err();
+
+        assert!(err.to_string().contains("unknown field"));
     }
 }

@@ -130,7 +130,7 @@ pub fn current_uid() -> u32 {
 /// A policy allowing the current user every command.
 pub fn allow_all_policy() -> String {
     format!(
-        r#"{{"users":[{{"uid":{},"commands":[],"priority":100}}]}}"#,
+        r#"{{"command_rules":[{{"subject":{{"uid":{0}}},"decision":"allow"}}],"priority_rules":[{{"subject":{{"uid":{0}}},"max_priority":100}}]}}"#,
         current_uid()
     )
 }
@@ -139,7 +139,7 @@ pub fn allow_all_policy() -> String {
 pub fn allow_only_policy(commands: &[u32]) -> String {
     let list: Vec<String> = commands.iter().map(u32::to_string).collect();
     format!(
-        r#"{{"users":[{{"uid":{},"commands":[{}],"priority":100}}]}}"#,
+        r#"{{"command_rules":[{{"subject":{{"uid":{0}}},"commands":[{1}],"decision":"allow"}}],"priority_rules":[{{"subject":{{"uid":{0}}},"max_priority":100}}]}}"#,
         current_uid(),
         list.join(",")
     )

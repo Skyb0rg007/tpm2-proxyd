@@ -47,7 +47,8 @@ workdir="$(mktemp -d)"
 sock="$workdir/tpm2-proxyd.sock"
 policy="$workdir/policy.json"
 # Allow this user every command (empty command list = all), high priority.
-printf '{"users":[{"uid":%s,"commands":[],"priority":100}]}\n' "$(id -u)" >"$policy"
+printf '{"command_rules":[{"subject":{"uid":%s},"decision":"allow"}],"priority_rules":[{"subject":{"uid":%s},"max_priority":100}]}\n' \
+  "$(id -u)" "$(id -u)" >"$policy"
 
 swtpm_pid=""
 daemon_pid=""

@@ -6,12 +6,12 @@ SPDX-License-Identifier: Apache-2.0
 
 # tpm2-proxyd Policy Language
 
-This document designs a future declarative policy language for `tpm2-proxyd`.
-It is not the small JSON format currently parsed by `src/config.rs`. The goal is
-to describe a policy model rich enough to make local multi-user TPM access safe:
-not just "may this UID send command code X?", but "may this subject send this
-command with these handles, parameters, object templates, and ownership
-relationships?"
+This document designs a future declarative policy language for `tpm2-proxyd`. It
+is not the small JSON format currently parsed by
+`crates/tpm2-proxyd/src/policy.rs`. The goal is to describe a policy model rich
+enough to make local multi-user TPM access safe: not just "may this UID send
+command code X?", but "may this subject send this command with these handles,
+parameters, object templates, and ownership relationships?"
 
 The language is deliberately declarative. Administrators describe subjects,
 namespaces, resource ownership rules, and command predicates. The daemon parses

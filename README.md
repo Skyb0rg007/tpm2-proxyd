@@ -77,18 +77,25 @@ to match.
 
 ## Configuring policy
 
-Policy is a JSON file (default `/etc/tpm2-proxyd/policy.json`). Rules grant
-specific TPM command codes (decimal `TPM_CC` values; an empty list means *all*
-commands) to a UID or GID, and cap the scheduling priority that peer may receive.
-The default decision is **deny**.
+Policy is a JSON file (default `/etc/tpm2-proxyd/policy.json`) with two ordered
+rule lists. Each rule's `subject` matches a `uid`, a `gid` (primary or
+supplementary), both, or, if empty, every peer.
+
+- `command_rules` allow or deny TPM command codes (decimal `TPM_CC` values; an
+  empty or omitted list means *all* commands). The first matching rule wins;
+  otherwise `default_decision` applies (default **deny**).
+- `priority_rules` cap the scheduling priority a peer may receive. The first
+  matching rule wins; otherwise `default_max_priority` applies (default `0`).
 
 ```json
 {
-  "users": [
-    { "uid": 1000, "commands": [379, 378], "priority": 5 }
+  "command_rules": [
+    { "subject": { "uid": 1000 }, "commands": [379, 378], "decision": "allow" },
+    { "subject": { "gid": 1001 }, "decision": "allow" }
   ],
-  "groups": [
-    { "gid": 1001, "commands": [], "priority": 1 }
+  "priority_rules": [
+    { "subject": { "uid": 1000 }, "max_priority": 5 },
+    { "subject": { "gid": 1001 }, "max_priority": 1 }
   ]
 }
 ```

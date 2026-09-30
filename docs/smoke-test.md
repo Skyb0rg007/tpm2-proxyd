@@ -31,11 +31,17 @@ Create a test policy that allows the current user to run `TPM2_GetRandom`
 ```sh
 cat > /tmp/tpm2-proxyd-smoke.json <<EOF
 {
-  "users": [
+  "command_rules": [
     {
-      "uid": $(id -u),
+      "subject": { "uid": $(id -u) },
       "commands": [379],
-      "priority": 10
+      "decision": "allow"
+    }
+  ],
+  "priority_rules": [
+    {
+      "subject": { "uid": $(id -u) },
+      "max_priority": 10
     }
   ]
 }

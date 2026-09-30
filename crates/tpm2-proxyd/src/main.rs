@@ -24,16 +24,14 @@
 //!                                   └──forward────────────▶ upstream ──▶ TPM
 //! ```
 //!
-//! `cli` and `config` supply settings, and `systemd` provides socket
+//! `cli` supplies settings, `policy` loads the policy file, and `systemd` provides socket
 //! activation, readiness, and watchdog integration. `SIGHUP` reloads the policy.
 
 /// Core proxy pipeline and shared runtime state: inspect → authorize → forward.
 mod broker;
 /// Command-line argument parsing.
 mod cli;
-/// On-disk configuration model and loading.
-mod config;
-/// Access-control rule model and evaluation engine.
+/// Access-control rule model, policy file loading, and evaluation engine.
 mod policy;
 /// Non-preemptive upstream TPM command scheduler.
 mod scheduler;
@@ -73,9 +71,7 @@ async fn main() -> ExitCode {
 }
 
 async fn run(options: cli::Options) -> anyhow::Result<()> {
-    let policy = config::Config::load(&options.config)
-        .with_context(|| format!("loading config {}", options.config.display()))?
-        .policy();
+    let policy = policy::Policy::new(policy::PolicyConfig::load(&options.config)?);
 
     let (scheduler, upstream_label) = start_scheduler(&options).await?;
     let broker = broker::Broker::new(policy, scheduler);
@@ -195,9 +191,7 @@ fn spawn_signal_handlers(
 /// Re-read the policy file and atomically swap it in, returning the new
 /// policy generation.
 fn reload_policy(broker: &broker::Broker, config_path: &Path) -> anyhow::Result<u64> {
-    let policy = config::Config::load(config_path)
-        .with_context(|| format!("loading config {}", config_path.display()))?
-        .policy();
+    let policy = policy::Policy::new(policy::PolicyConfig::load(config_path)?);
     Ok(broker.replace_policy(policy))
 }
 

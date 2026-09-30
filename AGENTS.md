@@ -78,11 +78,12 @@ per-client sessions) → `upstream` (the TPM).
 
 ### Policy
 
-- **Current:** a small JSON format (`config.rs`, `policy.rs`,
-  example `dist/policy.example.json`). Command rules match a UID, a GID, both,
-  or everyone, plus a list of command codes (empty = all), and allow or deny
-  first-match-wins, falling back to `default_decision`. Priority rules cap each
-  connection's priority at admission.
+- **Current:** a small JSON format, the serde form of `PolicyConfig`
+  (`policy.rs`, example `dist/policy.example.json`). Command rules match a UID,
+  a GID, both, or everyone, plus a list of command codes (empty = all), and
+  allow or deny first-match-wins, falling back to `default_decision`. Priority
+  rules cap each connection's priority at admission. Keep this one schema;
+  don't reintroduce a separate on-disk model that compiles into it.
 - **Planned:** `docs/command-policy.md` (first-release scope: TBS-equivalent
   unprivileged workflows with in-memory ownership tracking),
   `docs/policy-language.md` (declarative, default-deny YAML policy language),
