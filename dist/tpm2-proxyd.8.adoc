@@ -93,6 +93,16 @@ dictionary-attack lockout (*TPM_RC_AUTH_FAIL*), in total and per user, and logs
 each one. Once the total reaches _COUNT_, each further failure is logged as a
 warning. The default is 10; a value of 0 never warns.
 
+*--auth-failure-limit*=_COUNT_::
+Once a user has caused _COUNT_ of those failures, every command from that user
+is refused with *TPM_RC_LOCKOUT* until the count recovers. The default is 5; a
+value of 0 never locks a user out.
+
+*--auth-failure-recovery-secs*=_SECONDS_::
+Like the TPM's lockout interval: every _SECONDS_, the total and each user's
+count forget one failure, and a locked-out user is let back in once its count
+is below the limit. The default is 600; a value of 0 never recovers.
+
 *--command-timeout-secs*=_SECONDS_::
 Hard per-command timeout. The default is 120 seconds.
 

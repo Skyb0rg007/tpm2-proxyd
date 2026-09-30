@@ -108,6 +108,17 @@ impl Client {
 
     /// Authorize and execute one parsed TPM command.
     pub async fn execute(&self, command: Command) -> Result<Response, BrokerError> {
+        if self.broker.auth_failures.is_locked_out(self.peer.uid) {
+            tracing::debug!(
+                uid = self.peer.uid,
+                pid = self.peer.pid,
+                command = %command.code(),
+                "command refused: user is locked out"
+            );
+            return Err(BrokerError::LockedOut {
+                command_code: command.code().value(),
+            });
+        }
         let authorized = self
             .broker
             .policy
@@ -147,6 +158,12 @@ pub enum BrokerError {
         command_code: u32,
         /// Why.
         denial: Denial,
+    },
+    /// The peer's UID reached the authorization failure limit.
+    #[error("refused TPM command {command_code:#010x}: user is locked out")]
+    LockedOut {
+        /// Refused TPM command code.
+        command_code: u32,
     },
     /// Scheduler or upstream failure.
     #[error(transparent)]
@@ -208,7 +225,7 @@ mod tests {
         let broker = Broker::new(
             Policy::from_json("{}", &[]),
             scheduler,
-            AuthFailures::new(0),
+            AuthFailures::new(0, 0, std::time::Duration::ZERO),
         );
         let client = broker.admit(Peer::new(1000, 100), Priority(10));
 
@@ -235,7 +252,7 @@ mod tests {
         let broker = Broker::new(
             Policy::from_json("{}", &[]),
             scheduler,
-            AuthFailures::new(0),
+            AuthFailures::new(0, 0, std::time::Duration::ZERO),
         );
         let client = broker.admit(Peer::new(1000, 100), Priority(0));
 
@@ -258,7 +275,11 @@ mod tests {
             r#"{"rules": [{"subject": {"uid": 1000}, "profile": "all", "max_priority": 3}]}"#,
             &[("all", r#"{"commands": ["*"]}"#)],
         );
-        let broker = Broker::new(policy, scheduler, AuthFailures::new(0));
+        let broker = Broker::new(
+            policy,
+            scheduler,
+            AuthFailures::new(0, 0, std::time::Duration::ZERO),
+        );
 
         assert_eq!(
             broker.admit(Peer::new(1000, 100), Priority(50)).priority(),
@@ -288,7 +309,7 @@ mod tests {
         let broker = Broker::new(
             Policy::allow_all(),
             CommandScheduler::start(AuthFailUpstream, 4),
-            AuthFailures::new(0),
+            AuthFailures::new(0, 0, std::time::Duration::ZERO),
         );
         let first = broker.admit(Peer::new(1000, 100), Priority(0));
         let second = broker.admit(Peer::new(1001, 100), Priority(0));
@@ -315,11 +336,42 @@ mod tests {
                 },
                 4,
             ),
-            AuthFailures::new(0),
+            AuthFailures::new(0, 0, std::time::Duration::ZERO),
         );
         let client = broker.admit(Peer::new(1000, 100), Priority(0));
         client.execute(command(0x17b)).await.unwrap();
 
         assert_eq!(broker.auth_failures().total(), 0);
+    }
+
+    #[tokio::test]
+    async fn locked_out_uids_are_refused_without_reaching_upstream() {
+        let broker = Broker::new(
+            Policy::allow_all(),
+            CommandScheduler::start(AuthFailUpstream, 4),
+            AuthFailures::new(0, 2, std::time::Duration::ZERO),
+        );
+        let first = broker.admit(Peer::new(1000, 100), Priority(0));
+        let second = broker.admit(Peer::new(1000, 100), Priority(0));
+        let other = broker.admit(Peer::new(1001, 100), Priority(0));
+
+        first.execute(command(0x17b)).await.unwrap();
+        first.execute(command(0x17b)).await.unwrap();
+
+        // Every connection from the locked-out UID is refused, and the refused
+        // commands never reach the TPM, so they aren't counted.
+        for client in [&first, &second] {
+            assert!(matches!(
+                client.execute(command(0x17b)).await,
+                Err(BrokerError::LockedOut {
+                    command_code: 0x17b
+                })
+            ));
+        }
+        assert_eq!(broker.auth_failures().for_uid(1000), 2);
+
+        // Other users still reach the TPM.
+        other.execute(command(0x17b)).await.unwrap();
+        assert_eq!(broker.auth_failures().for_uid(1001), 1);
     }
 }

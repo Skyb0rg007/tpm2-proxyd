@@ -81,7 +81,11 @@ async fn run(options: cli::Options) -> anyhow::Result<()> {
     let broker = broker::Broker::new(
         policy,
         scheduler,
-        lockout::AuthFailures::new(options.auth_failure_warn_threshold),
+        lockout::AuthFailures::new(
+            options.auth_failure_warn_threshold,
+            options.auth_failure_limit,
+            Duration::from_secs(options.auth_failure_recovery_secs),
+        ),
     );
     let registry = server::registry::ConnectionRegistry::new(
         options.max_connections,

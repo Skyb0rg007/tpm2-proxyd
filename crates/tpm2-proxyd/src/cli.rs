@@ -109,6 +109,27 @@ pub struct Options {
         value_parser = clap::value_parser!(u64)
     )]
     pub auth_failure_warn_threshold: u64,
+    /// Number of authorization failures toward the TPM's dictionary-attack
+    /// lockout after which a UID's commands are all refused until its failures
+    /// recover (0 = unlimited).
+    #[arg(
+        long,
+        require_equals = true,
+        value_name = "COUNT",
+        default_value_t = crate::lockout::DEFAULT_UID_LIMIT,
+        value_parser = clap::value_parser!(u64)
+    )]
+    pub auth_failure_limit: u64,
+    /// Seconds for each authorization failure count to forget one failure,
+    /// like the TPM's lockout interval (0 = never recover).
+    #[arg(
+        long,
+        require_equals = true,
+        value_name = "SECONDS",
+        default_value_t = crate::lockout::DEFAULT_RECOVERY_INTERVAL.as_secs(),
+        value_parser = clap::value_parser!(u64)
+    )]
+    pub auth_failure_recovery_secs: u64,
     /// Hard per-command timeout, in seconds.
     #[arg(
         long,
@@ -186,6 +207,14 @@ mod tests {
         assert_eq!(
             options.auth_failure_warn_threshold,
             crate::lockout::DEFAULT_WARN_THRESHOLD
+        );
+        assert_eq!(
+            options.auth_failure_limit,
+            crate::lockout::DEFAULT_UID_LIMIT
+        );
+        assert_eq!(
+            options.auth_failure_recovery_secs,
+            crate::lockout::DEFAULT_RECOVERY_INTERVAL.as_secs()
         );
         assert_eq!(
             options.max_connections_per_uid,

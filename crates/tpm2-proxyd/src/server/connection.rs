@@ -18,6 +18,7 @@ use tokio::task::JoinSet;
 
 use crate::{
     broker::{Broker, BrokerError, Client},
+    lockout,
     scheduler::Priority,
     server::{
         hello::{self, Hello, HelloStatus},
@@ -369,6 +370,9 @@ where
                             Err(BrokerError::Denied { denial, .. }) => {
                                 Response::error(denial.response_code())
                             }
+                            Err(BrokerError::LockedOut { .. }) => {
+                                Response::error(lockout::RC_LOCKED_OUT)
+                            }
                             Err(error) => return Err(error.into()),
                         };
                         stream.write_response(&response).await?;
@@ -463,7 +467,11 @@ mod tests {
             },
             8,
         );
-        let broker = Broker::new(Policy::allow_all(), scheduler, AuthFailures::new(0));
+        let broker = Broker::new(
+            Policy::allow_all(),
+            scheduler,
+            AuthFailures::new(0, 0, std::time::Duration::ZERO),
+        );
         let client_context = broker.admit(Peer::new(1000, 100), Priority(4));
         let (mut client, server) = tokio::io::duplex(256);
         let (_shutdown_tx, shutdown_rx) = watch::channel(false);
@@ -497,7 +505,7 @@ mod tests {
         let broker = Broker::new(
             Policy::from_json("{}", &[]),
             scheduler,
-            AuthFailures::new(0),
+            AuthFailures::new(0, 0, std::time::Duration::ZERO),
         );
         let client_context = broker.admit(Peer::new(1000, 100), Priority(4));
         let (mut client, server) = tokio::io::duplex(256);
@@ -556,7 +564,11 @@ mod tests {
             },
             8,
         );
-        let broker = Broker::new(Policy::allow_all(), scheduler, AuthFailures::new(0));
+        let broker = Broker::new(
+            Policy::allow_all(),
+            scheduler,
+            AuthFailures::new(0, 0, std::time::Duration::ZERO),
+        );
         let (shutdown, shutdown_rx) = watch::channel(false);
         let server = tokio::spawn(serve_listener(
             listener,

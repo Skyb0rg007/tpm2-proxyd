@@ -130,9 +130,10 @@ Known limitations of the profile model:
 
 - **Dictionary-attack lockout is shared.** A user who repeatedly fails
   authorization for their own DA-protected object pushes the whole TPM into
-  lockout. Refusing to create or load objects without `noDA` would close it,
-  but that needs template inspection. For now the proxy only watches for it
-  (see below).
+  lockout. The proxy limits how many failures each user may cause (see
+  below), but several users under their limits can still add up to the TPM's,
+  and the proxy doesn't read the TPM's own limit. Refusing to create or load
+  objects without `noDA` would close it, but that needs template inspection.
 - **Saved contexts are possession-based.** A context file saved by one user can
   be loaded by another who obtains it, although using the object still needs
   its authorization.
@@ -142,15 +143,24 @@ Known limitations of the profile model:
 The TPM reports a failed authorization that counts toward its dictionary-attack
 lockout as `TPM_RC_AUTH_FAIL` (a failure without DA implications is
 `TPM_RC_BAD_AUTH`). The broker checks each response the TPM returns and counts
-those failures in total and per UID, in memory for the daemon's lifetime.
-Every failure is logged with the peer's UID and PID, the command, and both
-counts; once the total reaches `--auth-failure-warn-threshold` (default 10),
-each further failure is logged as a warning instead. The response is relayed to
-the client unchanged.
+those failures in total and per UID, in memory. Every failure is logged with the
+peer's UID and PID, the command, and both counts; once the total reaches
+`--auth-failure-warn-threshold` (default 10), each further failure is logged as
+a warning instead. The response is relayed to the client unchanged.
 
-The counts only grow. They aren't a model of the TPM's own counter, which
-decays over time and can be reset through the lockout hierarchy, and nothing is
-denied because of them yet.
+A UID whose count reaches `--auth-failure-limit` (default 5) is locked out: the
+broker refuses every command from any of its connections without forwarding
+it, and the client gets `TPM_RC_LOCKOUT` in the resource-manager layer, which
+tpm2-tss decodes as the TPM being in DA lockout mode. This keeps one user from
+spending the TPM's whole failure budget.
+
+Like the TPM's own counter, the counts recover: each forgets one failure every
+`--auth-failure-recovery-secs` (default 600), and a locked-out UID is let back
+in as soon as its count is below the limit again, so a lockout lasts about one
+interval unless the user keeps failing. Being locked out and being let back in
+are both logged. The counts aren't read from the TPM, whose counter recovers on
+its own schedule and can be reset through the lockout hierarchy, and a daemon
+restart clears them.
 
 ### Recognized commands only
 

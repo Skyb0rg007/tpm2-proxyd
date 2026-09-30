@@ -163,7 +163,11 @@ impl Harness {
             fastrand_suffix(),
         ));
         let scheduler = CommandScheduler::start(FakeTpm, 8);
-        let broker = Broker::new(policy(), scheduler, AuthFailures::new(0));
+        let broker = Broker::new(
+            policy(),
+            scheduler,
+            AuthFailures::new(0, 0, std::time::Duration::ZERO),
+        );
         let registry = ConnectionRegistry::new(max_connections, 0);
         let listener = RawTpmListener::bind_prepared(&socket).unwrap();
         let (shutdown, shutdown_rx) = watch::channel(false);

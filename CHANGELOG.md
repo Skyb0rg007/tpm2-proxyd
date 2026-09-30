@@ -32,7 +32,10 @@ kernel resource manager (`/dev/tpmrm0`).
 - **Lockout tracking**: authorization failures that count toward the TPM's
   dictionary-attack lockout are counted in total and per user and logged, with
   a warning once the total reaches `--auth-failure-warn-threshold` (default
-  10).
+  10). A user who causes `--auth-failure-limit` failures (default 5) has all
+  its commands refused with `TPM_RC_LOCKOUT` until its count recovers; like the
+  TPM's counter, counts forget one failure every `--auth-failure-recovery-secs`
+  (default 600).
 - **Limits**: a hard per-command timeout (`--command-timeout-secs`), and caps on
   connections in total (`--max-connections`) and per user
   (`--max-connections-per-uid`, default 16).
@@ -42,8 +45,9 @@ kernel resource manager (`/dev/tpmrm0`).
 Known limitations:
 
 - A user can push the TPM into dictionary-attack lockout by repeatedly failing
-  authorization for their own DA-protected objects. The proxy logs these
-  failures but doesn't prevent them.
+  authorization for their own DA-protected objects. The proxy caps each
+  user's failures, but several users under their caps can still add up to the
+  TPM's limit.
 - Saved context files are possession-based: another user who obtains one can
   load it, although using the object still needs its authorization.
 - Commands the proxy doesn't recognize, including vendor commands, close the
