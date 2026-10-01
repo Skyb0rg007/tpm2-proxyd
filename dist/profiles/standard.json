@@ -11,6 +11,7 @@
     "TPM_CC_GetTestResult",
     "TPM_CC_ReadClock",
     "TPM_CC_TestParms",
+    "TPM_CC_ECC_Parameters",
     "TPM_CC_PCR_Read",
 
     "TPM_CC_StartAuthSession",
