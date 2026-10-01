@@ -92,9 +92,9 @@ tls() {
   if [ "$#" -gt 0 ]; then
     server_args=(-Verify 1 -verify_return_error -CAfile client.crt)
   fi
-  openssl s_server "${tls_tpm[@]}" -unix "$sock" -naccept 1 -www "$version" \
-    -key "$server.key" -cert "$server.crt" "${server_args[@]}" \
-    >tls-server.log 2>&1 &
+  spawn openssl s_server "${tls_tpm[@]}" -unix "$sock" -naccept 1 -www \
+    "$version" -key "$server.key" -cert "$server.crt" "${server_args[@]}" \
+    >tls-server.log 2>&1
   pid=$!
   wait_for_socket "$sock" tls-server.log
   log "$label"
@@ -102,7 +102,9 @@ tls() {
     openssl s_client "${tls_tpm[@]}" -unix "$sock" "$version" -quiet -brief \
       -CAfile "$server.crt" -verify_hostname "$server" -verify_return_error \
       "$@" >tls-client.out 2>tls-client.log || true
-  wait "$pid" || true
+  # Bounded: if the client failed before connecting, say loading its TPM
+  # key, the server is still waiting for its one connection.
+  reap "$pid"
   if ! grep -q '^HTTP/1.0 200 ok' tls-client.out; then
     cat tls-server.log tls-client.log >&2
     fail "$label"

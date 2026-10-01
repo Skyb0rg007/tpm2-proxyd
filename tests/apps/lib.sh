@@ -96,6 +96,28 @@ stop() {
   wait "$1" 2>/dev/null || true
 }
 
+# Start a background helper that's stopped at exit if it's still running.
+# Its PID is in $! afterwards.
+spawn() {
+  "$@" &
+  _pids+=($!)
+}
+
+# Give a helper started with `spawn` up to 5 seconds to exit on its own, then
+# stop it.
+reap() {
+  local _ i
+  for _ in $(seq 1 50); do
+    kill -0 "$1" 2>/dev/null || break
+    sleep 0.1
+  done
+  stop "$1"
+  for i in "${!_pids[@]}"; do
+    [ "${_pids[i]}" != "$1" ] || unset '_pids[i]'
+  done
+  _pids=("${_pids[@]}")
+}
+
 # Register a function to run at exit, before the daemon is stopped.
 on_exit() { _cleanup_hooks+=("$1"); }
 
