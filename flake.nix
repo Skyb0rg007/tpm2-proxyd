@@ -31,6 +31,9 @@
 
       checks = forAllSystems (system: {
         inherit (self.packages.${system}) tpm2-proxyd;
+        app-tests = (pkgsFor system).callPackage ./nix/app-tests.nix {
+          inherit (self.packages.${system}) tpm2-proxyd;
+        };
       });
 
       devShells = forAllSystems (
@@ -58,6 +61,18 @@
               pkgs.tpm2-tss
               pkgs.treefmt
             ];
+          };
+
+          # The default shell plus the applications tests/apps drives.
+          apps = pkgs.mkShell {
+            inputsFrom = [ self.devShells.${system}.default ];
+            packages = [
+              pkgs.openssh
+              pkgs.openssl
+              pkgs.tpm2-pkcs11.bin
+            ];
+            OPENSSL_MODULES = "${pkgs.tpm2-openssl}/lib/ossl-modules";
+            TPM2_PKCS11_MODULE = "${pkgs.tpm2-pkcs11}/lib/libtpm2_pkcs11.so";
           };
         }
       );

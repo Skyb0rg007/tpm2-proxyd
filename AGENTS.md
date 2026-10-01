@@ -210,9 +210,16 @@ A plain `cargo build` only builds `default-members` (the daemon), not the TCTI
 object file" error.
 
 Tests: in-crate unit tests, `crates/tpm2-proxyd/src/server/smoke.rs` (full
-server stack over a real Unix socket with a fake upstream), and
+server stack over a real Unix socket with a fake upstream),
 `crates/tpm2-proxyd/tests/e2e.rs` (real client → daemon → fresh swtpm per
-test).
+test), and `tests/apps/` (shell scripts driving tpm2-openssl and
+tpm2-pkcs11 + OpenSSH through the daemon under the `standard` profile; they fail
+on any denial). The app tests need a kernel RM upstream, not swtpm: the apps
+leave objects loaded on exit and swtpm runs out of slots. Run them with
+`nix develop .#apps --command tests/apps/run.sh` (host `/dev/tpmrm0`) or the
+`app-tests` flake check (NixOS VM with a vTPM; needs KVM; not in CI). Keep them
+from failing authorizations against a real TPM: that counts toward its
+dictionary-attack lockout.
 
 The Nix package reads `Cargo.lock` directly (`cargoLock.lockFile`), so there is
 no vendor hash to refresh when dependencies change.

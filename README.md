@@ -206,6 +206,20 @@ nix develop --command cargo test --workspace
 nix develop --command pre-commit run --all-files   # treefmt, reuse, editorconfig
 ```
 
+`tests/apps` runs real TPM applications through the proxy under the shipped
+`standard` profile, and fails if the daemon denies anything they send:
+tpm2-openssl (signing, and TLS 1.2/1.3 with TPM server and client keys) and
+tpm2-pkcs11 (provisioned with `tpm2_ptool`, then used by OpenSSH directly and
+through `ssh-agent`). They need a kernel resource manager upstream, since these
+applications rely on it to flush what they leave loaded, so they run against
+`/dev/tpmrm0` (transient objects only, no failed authorizations) or in a NixOS
+VM with a virtual TPM:
+
+```sh
+nix develop .#apps --command tests/apps/run.sh     # against the host TPM
+nix build .#checks.x86_64-linux.app-tests          # in a VM (needs KVM)
+```
+
 See `docs/design.md` for the architecture conventions.
 
 [TCTI]: https://trustedcomputinggroup.org/resource/tss-tcti-specification/
