@@ -207,6 +207,12 @@ where
                     break;
                 }
             }
+            // Reap finished connections, or the set grows with every one.
+            Some(joined) = tasks.join_next(), if !tasks.is_empty() => {
+                if let Err(error) = joined {
+                    tracing::error!(%error, "connection task failed");
+                }
+            }
             accepted = listener.accept() => {
                 let accepted = match accepted {
                     Ok(accepted) => accepted,
