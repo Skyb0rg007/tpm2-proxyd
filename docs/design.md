@@ -218,8 +218,9 @@ to abort and is not guaranteed to be honored quickly. Consequently:
   it is enforced by declining to start the client's *next* command once the
   slice is spent, never by interrupting a running one.
 - A separate **hard per-command time limit** guards against hangs: the upstream
-  transmit/receive is wrapped in a timeout, and on expiry the scheduler issues a
-  TCTI `cancel` and fails that command (and likely the connection).
+  transmit/receive is wrapped in a timeout, and on expiry the command fails and
+  its connection ends. Nothing cancels the command in the TPM, so the TPM stays
+  busy with it, and the commands queued behind it still wait.
 
 ### The scheduler model
 
@@ -230,8 +231,11 @@ The initial implementation schedules complete commands through a single
 upstream worker. It chooses the highest-priority queued command, preserves FIFO
 order within the same priority, and never preempts an in-flight transaction. A
 **hard per-command timeout** is active (enforced by `tpm2-device`, configurable
-via `--command-timeout-secs`): a wedged TPM transaction is abandoned so the
-worker — and the clients queued behind it — recover. A **concurrent connection
+via `--command-timeout-secs`): the client of a wedged transaction gets an error
+instead of waiting forever. It bounds that client's wait, not the TPM's: closing
+the abandoned `/dev/tpmrm0` handle waits in the kernel for the command to
+finish (the kernel applies its own command duration limits), and the clients
+queued behind it wait for that too. A **concurrent connection
 cap** (`--max-connections`) and a per-UID cap (`--max-connections-per-uid`)
 bound resource use. Per-UID quotas and time-slice
 accounting remain planned rather than active in this command path.
@@ -301,8 +305,8 @@ clients; there, every session shares the one TPM.
 
 - Resource management (handle virtualization, context swap) — delegated to the
   kernel RM or `tpm2-abrmd`.
-- Guaranteeing cancellation of an in-flight command — best-effort via TCTI
-  `cancel` only.
+- Cancelling an in-flight command: once sent, it runs to completion in the
+  TPM.
 - Forwarding vendor-specific or otherwise unrecognized command codes — only
   commands the proxy can decode and inspect are forwarded; everything else is
   rejected at the parse boundary (see [Recognized commands only](#recognized-commands-only)).

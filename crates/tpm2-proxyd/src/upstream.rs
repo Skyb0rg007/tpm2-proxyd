@@ -43,6 +43,13 @@ use tpm2_device::{TpmDeviceError, TpmPosixDevice, TpmTransport};
 
 use crate::tpm::{Command, Response};
 
+/// The largest command the kernel accepts on `/dev/tpmrm0` (`TPM_BUFSIZE`).
+pub const DEVICE_MAX_COMMAND_SIZE: usize = 4096;
+
+/// `TPM_RC_COMMAND_SIZE` in the resource-manager layer, the answer to a
+/// command too large for the kernel.
+pub const RC_COMMAND_TOO_LARGE: u32 = (11 << 16) | 0x142;
+
 /// Identifies one downstream client's upstream session.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub struct SessionId(pub u64);
@@ -107,8 +114,11 @@ impl TpmDeviceUpstream {
     /// upstream worker thread.
     ///
     /// `command_timeout` is the hard per-command time limit: `tpm2-device`
-    /// abandons a transaction whose response does not arrive within it, which
-    /// frees the worker (and the clients queued behind it) from a wedged TPM.
+    /// abandons a transaction whose response does not arrive within it, and
+    /// the client gets an error. That bounds how long the client waits, not
+    /// how long the TPM is busy: closing the abandoned handle waits in the
+    /// kernel for the command to finish, so the commands queued behind it
+    /// still wait for the TPM.
     ///
     /// Session devices are opened lazily on the worker thread, since
     /// [`TpmPosixDevice`] cannot cross threads. The device is also opened once
@@ -142,6 +152,11 @@ impl Upstream for TpmDeviceUpstream {
         session: SessionId,
         command: &Command,
     ) -> Result<Response, UpstreamError> {
+        // The kernel would refuse the write with E2BIG, failing the session;
+        // answer as a TPM would instead, and the client may carry on.
+        if command.as_bytes().len() > DEVICE_MAX_COMMAND_SIZE {
+            return Ok(Response::error(RC_COMMAND_TOO_LARGE));
+        }
         let (reply, response) = oneshot::channel();
         self.requests
             .send(DeviceRequest::Transact {
@@ -182,7 +197,17 @@ fn run_device_worker(path: &Path, timeout: Duration, incoming: &mpsc::Receiver<D
                 command,
                 reply,
             } => {
-                let _ = reply.send(transact(&mut devices, path, timeout, session, &command));
+                let result = transact(&mut devices, path, timeout, session, &command);
+                let failed = result.is_err();
+                let _ = reply.send(result);
+                // After a failed transaction (such as a timeout) the handle may
+                // be mid-command, so close it rather than reuse it; the
+                // client's connection ends with the error anyway. Closing
+                // waits in the kernel for an abandoned command to finish, so
+                // it happens after the client has its answer.
+                if failed {
+                    drop(devices.remove(&session));
+                }
             }
             // Dropping the device closes its handle, and the kernel resource
             // manager flushes everything the session left loaded.
@@ -192,6 +217,7 @@ fn run_device_worker(path: &Path, timeout: Duration, incoming: &mpsc::Receiver<D
 }
 
 /// Forward `command` on `session`'s device, opening the device if needed.
+/// After a failure the caller closes the device.
 fn transact(
     devices: &mut HashMap<SessionId, TpmPosixDevice>,
     path: &Path,
@@ -205,14 +231,7 @@ fn transact(
             entry.insert(open_device(path, timeout).map_err(UpstreamError::transport)?)
         }
     };
-    let result = forward(device, command);
-    // After a failed transaction (such as a timeout) a late response could
-    // still arrive on this handle and be mistaken for the next command's, so
-    // close it. The client's connection ends with the error anyway.
-    if result.is_err() {
-        devices.remove(&session);
-    }
-    result
+    forward(device, command)
 }
 
 /// Forward one validated command frame and return the raw response frame.
@@ -223,4 +242,26 @@ fn forward(device: &mut impl TpmTransport, command: &[u8]) -> Result<Vec<u8>, Up
         .and_then(|()| device.recv(&mut response))
         .map_err(UpstreamError::transport)?;
     Ok(response)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[tokio::test]
+    async fn answers_commands_too_large_for_the_kernel() {
+        // The command never reaches the device, so any openable file will do.
+        let mut upstream =
+            TpmDeviceUpstream::open("/dev/null", 4096, Duration::from_secs(1)).unwrap();
+        // TPM2_GetRandom padded past the kernel's limit.
+        let size = DEVICE_MAX_COMMAND_SIZE + 2;
+        let mut bytes = Vec::from(0x8001u16.to_be_bytes());
+        bytes.extend_from_slice(&(size as u32).to_be_bytes());
+        bytes.extend_from_slice(&0x17bu32.to_be_bytes());
+        bytes.resize(size, 0);
+        let command = Command::parse(bytes, crate::tpm::DEFAULT_MAX_PACKET_SIZE).unwrap();
+
+        let response = upstream.transact(SessionId(0), &command).await.unwrap();
+        assert_eq!(response.code(), RC_COMMAND_TOO_LARGE);
+    }
 }

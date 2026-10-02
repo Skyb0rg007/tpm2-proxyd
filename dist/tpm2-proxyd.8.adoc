@@ -109,7 +109,9 @@ count forget one failure, and a locked-out user is let back in once its count
 is below the limit. The default is 600; a value of 0 never recovers.
 
 *--command-timeout-secs*=_SECONDS_::
-Hard per-command timeout. The default is 120 seconds.
+Hard per-command timeout. The default is 120 seconds. A command that runs
+longer fails and its connection ends. The TPM can't be interrupted, so it stays
+busy until the command finishes, and other clients' commands still wait for it.
 
 == Signals
 

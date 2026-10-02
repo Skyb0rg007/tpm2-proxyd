@@ -61,8 +61,9 @@ pub struct Options {
     /// Accepts `unix:<path>`, `tcp:<host:port>`, a path, or `host:port`.
     #[arg(long, require_equals = true, value_name = "ADDR")]
     pub swtpm_server: Option<String>,
-    /// swtpm control socket. When set, the TPM is initialized (CMD_INIT) on
-    /// startup, so downstream clients must issue TPM2_Startup.
+    /// swtpm control socket. When set, the TPM is reset on startup (CMD_INIT
+    /// followed by TPM2_Startup); otherwise commands go straight through to an
+    /// already-started swtpm.
     #[arg(long, require_equals = true, value_name = "ADDR")]
     pub swtpm_ctrl: Option<String>,
     /// Maximum accepted TPM command or response size.
