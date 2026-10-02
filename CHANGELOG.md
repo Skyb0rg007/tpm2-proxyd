@@ -25,8 +25,11 @@ kernel resource manager (`/dev/tpmrm0`).
   the allowed commands and the handles they may reference. The `standard`
   profile, installed by default, covers unprivileged key, sealing, signing and
   attestation workflows while keeping users away from state they share:
-  persistent handles, NV indices, hierarchies and PCR values. `SIGHUP` reloads
-  the policy and profiles.
+  persistent handles, NV indices, hierarchies and PCR values. It lets users
+  save transient objects but not sessions, which the kernel would never flush.
+  `SIGHUP` reloads the policy and profiles.
+- **Session ownership**: a connection may flush only the sessions it started or
+  loaded, since session handles are visible to every client.
 - **Denials** return a TPM error response in the resource-manager layer and
   leave the connection open, and are logged with the peer's UID and PID.
 - **Lockout tracking**: authorization failures that count toward the TPM's
@@ -35,10 +38,13 @@ kernel resource manager (`/dev/tpmrm0`).
   10). A user who causes `--auth-failure-limit` failures (default 5) has all
   its commands refused with `TPM_RC_LOCKOUT` until its count recovers; like the
   TPM's counter, counts forget one failure every `--auth-failure-recovery-secs`
-  (default 600).
+  (default 600). Wrong hierarchy passwords, which the TPM doesn't rate-limit,
+  count toward the user's limit too.
 - **Limits**: a hard per-command timeout (`--command-timeout-secs`), and caps on
-  connections in total (`--max-connections`) and per user
-  (`--max-connections-per-uid`, default 16).
+  connections in total (`--max-connections`, default 1024) and per user
+  (`--max-connections-per-uid`, default 16), counted from accept. The daemon
+  raises its open-file limit to fit. Client-triggered log lines are limited per
+  user.
 - **Packaging**: systemd socket and service units with socket activation,
   readiness and watchdog; a sysusers file; a man page; `dist/install.sh`.
 
@@ -50,5 +56,7 @@ Known limitations:
   TPM's limit.
 - Saved context files are possession-based: another user who obtains one can
   load it, although using the object still needs its authorization.
+- Policy rules can't reliably restrict a user below the default profile: a user
+  with subordinate IDs can connect from a user namespace as another UID.
 - Commands the proxy doesn't recognize, including vendor commands, close the
   connection instead of getting an error response.

@@ -142,7 +142,8 @@ mirroring `references/tpm2-tss/include/tss2/tss2_tcti.h` — there is no C code 
 
 Cargo emits `libtss2_tcti_proxy.so` (underscores). The loader searches for
 `libtss2-tcti-<name>.so`, so install/symlink it as `libtss2-tcti-proxy.so` to
-load by name (`--tcti=proxy:<sockpath>`); a full path works regardless.
+load by name (`--tcti=proxy:<sockpath>`); a full path works regardless. The
+Nix package builds the workspace and ships both names.
 
 ### Packaging (`dist/`)
 
@@ -225,7 +226,7 @@ tpm2-pkcs11 + OpenSSH through the daemon under the `standard` profile; they fail
 on any denial). The app tests need a kernel RM upstream, not swtpm: the apps
 leave objects loaded on exit and swtpm runs out of slots. Run them with
 `nix develop .#apps --command tests/apps/run.sh` (host `/dev/tpmrm0`) or the
-`app-tests` flake check (NixOS VM with a vTPM; needs KVM; not in CI). Keep them
+`app-tests` flake check (NixOS VM with a vTPM; needs KVM; CI runs it). Keep them
 from failing authorizations against a real TPM: that counts toward its
 dictionary-attack lockout.
 
@@ -241,8 +242,9 @@ e.g. `Assisted-by: claude-opus-5-5`. Don't add `Co-Authored-By:` or
 `Claude-Session:` trailers.
 
 `.pre-commit-config.yaml` enforces (run `pre-commit run --all-files`); CI
-(`.github/workflows/ci.yml`) runs build, nextest, clippy, `treefmt --ci`, and
-`reuse lint`:
+(`.github/workflows/ci.yml`) runs build, nextest, clippy, `treefmt --ci`,
+`reuse lint` and the swtpm smoke test, and in a second job `nix build` of the
+package and the `app-tests` VM check:
 - `treefmt` — multiplexes `rustfmt` (`*.rs`) and `nixfmt` (`*.nix`). Note
   `.rustfmt.toml` sets `skip_children = true` and `edition = 2024`.
 - `reuse lint` — every file must carry SPDX license/copyright headers
