@@ -38,10 +38,13 @@ Every connection opens with a **hello**, then carries TPM traffic:
    | `1` | Unsupported: unknown version or flag. |
    | `2` | Busy: the connection limit (`--max-connections`, or `--max-connections-per-uid` for the peer's UID) is reached. |
 
-   After any refusal the server closes the connection. A connection that
-   doesn't open with the magic isn't speaking this protocol, so the server
-   closes it without replying, as it does a connection that sends nothing
-   within 10 seconds.
+   A connection counts against those limits from the moment it is accepted,
+   so connections that never send a hello still use up their user's slots.
+   One over a limit gets the `Busy` reply straight away, before the server
+   reads its hello. After any refusal the server closes the connection. A
+   connection that doesn't open with the magic isn't speaking this protocol,
+   so the server closes it without replying, as it does a connection that
+   sends nothing within 10 seconds.
 
    No flags are defined yet, and unknown flags are refused rather than ignored,
    so a client never silently loses an option it depends on. New per-connection

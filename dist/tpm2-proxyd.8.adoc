@@ -81,7 +81,12 @@ Maximum accepted TPM command or response size.
 Maximum number of commands queued for the upstream worker.
 
 *--max-connections*=_COUNT_::
-Maximum concurrent downstream connections. A value of 0 means unlimited.
+Maximum concurrent downstream connections. The default is 1024; a value of 0
+means unlimited. A connection counts from the moment it is accepted, before
+its hello, and one over this limit or *--max-connections-per-uid* is refused
+straight away. Each connection uses up to two file descriptors; at startup the
+daemon raises its open-file soft limit to the hard limit, and warns if that
+still can't cover this many connections.
 
 *--max-connections-per-uid*=_COUNT_::
 Maximum concurrent downstream connections from one user. The default is 16; a

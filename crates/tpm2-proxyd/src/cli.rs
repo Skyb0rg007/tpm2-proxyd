@@ -18,6 +18,10 @@ pub const DEFAULT_UPSTREAM_TPM_PATH: &str = "/dev/tpmrm0";
 pub const DEFAULT_QUEUE_DEPTH: usize = 64;
 /// Default cap on concurrent connections from one UID.
 pub const DEFAULT_MAX_CONNECTIONS_PER_UID: usize = 16;
+/// Default cap on concurrent downstream connections in total. Each holds a
+/// socket and, once it sends a command, a `/dev/tpmrm0` handle, so this keeps
+/// the daemon's file descriptors well within its open-file limit.
+pub const DEFAULT_MAX_CONNECTIONS: usize = 1024;
 /// Default hard per-command timeout, in seconds.
 pub const DEFAULT_COMMAND_TIMEOUT_SECS: u64 = 120;
 
@@ -84,7 +88,7 @@ pub struct Options {
         long,
         require_equals = true,
         value_name = "COUNT",
-        default_value_t = 0,
+        default_value_t = DEFAULT_MAX_CONNECTIONS,
         value_parser = clap::value_parser!(usize)
     )]
     pub max_connections: usize,
@@ -203,7 +207,7 @@ mod tests {
         assert_eq!(options.upstream, PathBuf::from(DEFAULT_UPSTREAM_TPM_PATH));
         assert_eq!(options.max_packet_size, crate::tpm::DEFAULT_MAX_PACKET_SIZE);
         assert_eq!(options.queue_depth, DEFAULT_QUEUE_DEPTH);
-        assert_eq!(options.max_connections, 0);
+        assert_eq!(options.max_connections, DEFAULT_MAX_CONNECTIONS);
         assert_eq!(
             options.auth_failure_warn_threshold,
             crate::lockout::DEFAULT_WARN_THRESHOLD

@@ -92,6 +92,7 @@ async fn run(options: cli::Options) -> anyhow::Result<()> {
         options.max_connections_per_uid,
     );
 
+    raise_open_file_limit(options.max_connections);
     let (listener, origin) = server::unix::RawTpmListener::from_systemd_or_bind(&options.socket)
         .with_context(|| format!("binding raw TPM socket {}", options.socket.display()))?;
 
@@ -125,6 +126,42 @@ async fn run(options: cli::Options) -> anyhow::Result<()> {
     tracing::info!("tpm2-proxyd stopped");
 
     result
+}
+
+/// File descriptors kept free for everything but client connections: the
+/// listener, the upstream, logging, systemd's notify socket.
+const RESERVED_FDS: u64 = 64;
+
+/// Raise the soft open-file limit to the hard limit, and warn if it still
+/// can't cover `max_connections` (0 = unlimited). Each connection holds its
+/// socket and, once it sends a command, its own `/dev/tpmrm0` handle; running
+/// out stops the daemon accepting anyone. systemd's default soft limit is
+/// 1024, against a much higher hard limit, and the daemon doesn't use
+/// `select(2)`, so it has no reason to stay under the soft one.
+fn raise_open_file_limit(max_connections: usize) {
+    use rustix::process::{Resource, getrlimit, setrlimit};
+
+    let mut limit = getrlimit(Resource::Nofile);
+    if limit.current != limit.maximum {
+        limit.current = limit.maximum;
+        if let Err(error) = setrlimit(Resource::Nofile, limit) {
+            tracing::warn!(%error, "failed to raise the open-file limit");
+        }
+    }
+    // `None` is unlimited.
+    let Some(soft) = getrlimit(Resource::Nofile).current else {
+        return;
+    };
+    let needed = (max_connections as u64)
+        .saturating_mul(2)
+        .saturating_add(RESERVED_FDS);
+    if max_connections == 0 || soft < needed {
+        tracing::warn!(
+            open_file_limit = soft,
+            max_connections,
+            "the open-file limit may run out before the connection limit is reached"
+        );
+    }
 }
 
 /// Open the configured upstream (swtpm socket or kernel TPM device) and start

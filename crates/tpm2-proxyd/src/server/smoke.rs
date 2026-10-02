@@ -303,6 +303,24 @@ async fn enforces_the_connection_cap() {
 }
 
 #[tokio::test]
+async fn connections_without_a_hello_count_against_the_cap() {
+    let harness = Harness::start(1);
+    // An idle connection that never sends its hello still takes the slot...
+    let _idle = harness.connect_raw().await;
+    tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+
+    // ...so the next one is refused at once, before it even sends a hello.
+    let mut second = harness.connect_raw().await;
+    let busy = tokio::time::timeout(HELLO_TIMEOUT / 2, read_hello_reply(&mut second))
+        .await
+        .expect("refused without waiting for the hello timeout");
+    assert_eq!(busy, reply(BUSY, 0));
+    assert_closed(&mut second).await;
+
+    harness.shutdown().await;
+}
+
+#[tokio::test]
 async fn refuses_unsupported_hellos() {
     let harness = Harness::start(0);
     let cases = [

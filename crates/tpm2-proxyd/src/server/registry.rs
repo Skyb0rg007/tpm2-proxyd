@@ -4,7 +4,7 @@
 
 //! Active downstream connection tracking.
 //!
-//! The registry counts admitted connections and enforces optional caps on
+//! The registry counts open connections, from accept on, and enforces optional caps on
 //! their total and on how many one UID may hold, so no single user can take
 //! every slot. A [`ConnectionGuard`] releases its slot when the connection task
 //! ends (including on panic), so the counts stay accurate without explicit
@@ -53,7 +53,7 @@ impl ConnectionRegistry {
         }
     }
 
-    /// Register a newly admitted connection from `uid`.
+    /// Register a newly accepted connection from `uid`.
     ///
     /// Fails with the cap that's been reached, in which case the caller should
     /// reject the connection.

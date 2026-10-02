@@ -298,8 +298,11 @@ async fn drain(mut tasks: JoinSet<()>) {
 
 /// Run one accepted connection: the hello, admission, then its commands.
 ///
-/// The client has [`HELLO_TIMEOUT`] to send its hello. A connection is counted
-/// against the registry's cap only once its hello is accepted.
+/// A connection counts against the registry's caps from the moment it's
+/// accepted, so connections that never send a hello still use up their user's
+/// slots rather than file descriptors without limit. One over a cap is
+/// answered `Busy` straight away, without waiting for its hello. Otherwise the
+/// client has [`HELLO_TIMEOUT`] to send its hello.
 async fn serve_client<S>(
     accepted: Accepted<S>,
     broker: &Broker,
@@ -312,16 +315,6 @@ where
 {
     let Accepted { mut stream, peer } = accepted;
 
-    let hello = tokio::select! {
-        _ = shutdown.changed() => return Ok(()),
-        hello = tokio::time::timeout(HELLO_TIMEOUT, stream.read_hello()) => {
-            hello.map_err(|_| io::Error::new(io::ErrorKind::TimedOut, "no hello received"))??
-        }
-    };
-    if let Err(status) = hello.check() {
-        stream.write_hello_reply(status, Priority(0)).await?;
-        return Err(ConnectionError::Refused(status));
-    }
     let _guard = match registry.register(peer.uid) {
         Ok(guard) => guard,
         Err(full) => {
@@ -337,6 +330,16 @@ where
             return Err(ConnectionError::Refused(HelloStatus::Busy));
         }
     };
+    let hello = tokio::select! {
+        _ = shutdown.changed() => return Ok(()),
+        hello = tokio::time::timeout(HELLO_TIMEOUT, stream.read_hello()) => {
+            hello.map_err(|_| io::Error::new(io::ErrorKind::TimedOut, "no hello received"))??
+        }
+    };
+    if let Err(status) = hello.check() {
+        stream.write_hello_reply(status, Priority(0)).await?;
+        return Err(ConnectionError::Refused(status));
+    }
     let client = broker.admit(peer, hello.priority);
     stream
         .write_hello_reply(HelloStatus::Accepted, client.priority())
