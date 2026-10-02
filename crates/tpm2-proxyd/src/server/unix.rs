@@ -32,8 +32,9 @@ pub enum SocketOrigin {
     Bound,
 }
 
-/// Default mode for the temporary raw TPM socket.
-pub const DEFAULT_SOCKET_MODE: u32 = 0o660;
+/// Mode of a socket the daemon binds itself: like the socket unit's, every
+/// local user may connect, and the policy decides what each may run.
+pub const DEFAULT_SOCKET_MODE: u32 = 0o666;
 
 /// Resolves a peer identity for an accepted Unix stream.
 pub trait PeerResolver: Send + Sync + 'static {
