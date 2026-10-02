@@ -365,9 +365,15 @@ async fn closes_connections_that_skip_the_hello() {
     let harness = Harness::start(0);
     let mut client = harness.connect_raw().await;
 
-    // A bare TPM command isn't a hello: no reply, no response, just a close.
-    client.write_all(&command(GET_RANDOM)).await.unwrap();
-    assert_closed(&mut client).await;
+    // A TPM command isn't a hello: no reply, no response, just a close. Pad it
+    // to the hello's 12 bytes so the server sees the wrong magic rather than
+    // waiting for more, and closes well before the hello timeout.
+    let mut bytes = command(GET_RANDOM);
+    bytes.resize(12, 0);
+    client.write_all(&bytes).await.unwrap();
+    tokio::time::timeout(HELLO_TIMEOUT / 2, assert_closed(&mut client))
+        .await
+        .expect("closed on the bad magic, not the hello timeout");
 
     harness.shutdown().await;
 }

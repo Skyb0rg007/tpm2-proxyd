@@ -129,7 +129,8 @@ fn policy_blocks_disallowed_commands() {
     );
 
     // The same connection can still run allowed commands afterwards.
-    assert!(client.transact(&common::get_random(8)).is_some());
+    let response = client.transact(&common::get_random(8)).unwrap();
+    assert!(common::is_success(&response));
 }
 
 /// The `standard` profile shipped in `dist/profiles` loads, allows ordinary
