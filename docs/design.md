@@ -160,9 +160,19 @@ peer's UID and PID, the command, and both counts; once the total reaches
 `--auth-failure-warn-threshold` (default 10), each further failure is logged as
 a warning instead. The response is relayed to the client unchanged.
 
+Hierarchy authorization is exempt from the TPM's dictionary-attack protection,
+so a wrong owner, endorsement, platform or lockout password comes back as
+`TPM_RC_BAD_AUTH` and the TPM neither counts it nor slows down. Left alone, any
+user allowed `CreatePrimary` could guess the owner password as fast as the TPM
+answers. The broker therefore also counts `TPM_RC_BAD_AUTH` responses to
+commands whose handle area names one of those hierarchies toward the UID's
+count, logged as a warning, though not toward the total, which tracks the TPM's
+own counter.
+
 A UID whose count reaches `--auth-failure-limit` (default 5) is locked out: the
-broker refuses every command from any of its connections without forwarding
-it, and the client gets `TPM_RC_LOCKOUT` in the resource-manager layer, which
+scheduler worker refuses every command from any of its connections without
+forwarding it, checking right before each command is sent so commands already
+queued count too, and the client gets `TPM_RC_LOCKOUT` in the resource-manager layer, which
 tpm2-tss decodes as the TPM being in DA lockout mode. This keeps one user from
 spending the TPM's whole failure budget.
 

@@ -105,7 +105,10 @@ warning. The default is 10; a value of 0 never warns.
 *--auth-failure-limit*=_COUNT_::
 Once a user has caused _COUNT_ of those failures, every command from that user
 is refused with *TPM_RC_LOCKOUT* until the count recovers. The default is 5; a
-value of 0 never locks a user out.
+value of 0 never locks a user out. A user's count also includes wrong passwords
+for the owner, endorsement, platform and lockout hierarchies (*TPM_RC_BAD_AUTH*
+from a command that names one), which the TPM doesn't count or slow down; they
+don't count toward the total.
 
 *--auth-failure-recovery-secs*=_SECONDS_::
 Like the TPM's lockout interval: every _SECONDS_, the total and each user's

@@ -140,6 +140,7 @@ impl Client {
             auth_failures: self.broker.auth_failures.clone(),
             peer: self.peer.clone(),
             command: code,
+            hierarchy: command.handles().iter().any(|&h| lockout::is_hierarchy(h)),
         };
         match self
             .session
@@ -172,6 +173,9 @@ struct LockoutGuard {
     auth_failures: Arc<AuthFailures>,
     peer: Peer,
     command: TpmCc,
+    /// Whether the command authorizes a hierarchy, whose wrong passwords the
+    /// TPM reports as `TPM_RC_BAD_AUTH` without counting them.
+    hierarchy: bool,
 }
 
 impl TransactionGuard for LockoutGuard {
@@ -180,8 +184,12 @@ impl TransactionGuard for LockoutGuard {
     }
 
     fn completed(&self, response: &Response) {
-        if lockout::is_auth_failure(response.code()) {
+        let code = response.code();
+        if lockout::is_auth_failure(code) {
             self.auth_failures.record(&self.peer, self.command);
+        } else if self.hierarchy && lockout::is_bad_auth(code) {
+            self.auth_failures
+                .record_hierarchy(&self.peer, self.command);
         }
     }
 }
@@ -411,6 +419,61 @@ mod tests {
         // Other users still reach the TPM.
         other.execute(command(0x17b)).await.unwrap();
         assert_eq!(broker.auth_failures().for_uid(1001), 1);
+    }
+
+    /// Answers every command with `TPM_RC_BAD_AUTH` for session 1.
+    struct BadAuthUpstream;
+
+    #[async_trait::async_trait]
+    impl Upstream for BadAuthUpstream {
+        async fn transact(
+            &mut self,
+            _session: SessionId,
+            _command: &Command,
+        ) -> Result<Response, UpstreamError> {
+            Ok(Response::error(0x9a2))
+        }
+    }
+
+    /// `TPM2_CreatePrimary` under the owner hierarchy with an empty password
+    /// session; the parameters don't matter here.
+    fn create_primary_owner() -> Command {
+        let mut body = Vec::from(0x4000_0001u32.to_be_bytes());
+        // Authorization area: one empty password session (TPM_RS_PW).
+        body.extend_from_slice(&9u32.to_be_bytes());
+        body.extend_from_slice(&0x4000_0009u32.to_be_bytes());
+        body.extend_from_slice(&[0, 0, 0, 0, 0]);
+        let mut bytes = Vec::from(0x8002u16.to_be_bytes());
+        bytes.extend_from_slice(&(10 + body.len() as u32).to_be_bytes());
+        bytes.extend_from_slice(&0x131u32.to_be_bytes());
+        bytes.extend_from_slice(&body);
+        Command::parse(bytes, DEFAULT_MAX_PACKET_SIZE).unwrap()
+    }
+
+    #[tokio::test]
+    async fn wrong_hierarchy_passwords_count_toward_the_uid_limit() {
+        let broker = Broker::new(
+            Policy::allow_all(),
+            CommandScheduler::start(BadAuthUpstream, 4),
+            AuthFailures::new(0, 2, std::time::Duration::ZERO),
+        );
+        let client = broker.admit(Peer::new(1000, 100), Priority(0));
+
+        // BAD_AUTH for a command that doesn't authorize a hierarchy (an
+        // object without DA protection, say) isn't counted.
+        client.execute(command(0x17b)).await.unwrap();
+        assert_eq!(broker.auth_failures().for_uid(1000), 0);
+
+        for _ in 0..2 {
+            let response = client.execute(create_primary_owner()).await.unwrap();
+            assert_eq!(response.code(), 0x9a2);
+        }
+        assert!(matches!(
+            client.execute(create_primary_owner()).await,
+            Err(BrokerError::LockedOut { .. })
+        ));
+        // The TPM didn't count them, so neither does the total.
+        assert_eq!(broker.auth_failures().total(), 0);
     }
 
     /// Answers every command with `TPM_RC_AUTH_FAIL` after a delay, counting

@@ -77,9 +77,12 @@ per-client sessions) → `upstream` (the TPM).
   upstream can't isolate sessions and ignores them.
 - `lockout.rs` counts `TPM_RC_AUTH_FAIL` responses (the ones that count
   toward the TPM's dictionary-attack lockout) in total and per UID, and logs
-  them, warning past `--auth-failure-warn-threshold`. The broker records them
-  after each upstream response and refuses every command from a UID at
-  `--auth-failure-limit` (`TPM_RC_LOCKOUT` in the resource-manager layer).
+  them, warning past `--auth-failure-warn-threshold`. A UID's count also
+  includes `TPM_RC_BAD_AUTH` from commands naming a hierarchy, which the TPM
+  doesn't rate-limit. The broker's `LockoutGuard` checks and records in the
+  scheduler worker, around each transaction, so concurrent commands can't
+  race past `--auth-failure-limit`; at the limit every command from the UID is
+  refused (`TPM_RC_LOCKOUT` in the resource-manager layer).
   Counts recover like the TPM's: one failure per
   `--auth-failure-recovery-secs`, applied lazily when a count is read or
   updated. They're in memory only.
