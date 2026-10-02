@@ -251,13 +251,12 @@ impl TransactionGuard for LockoutGuard {
     }
 
     fn completed(&self, response: &Response) {
-        let code = response.code();
-        if lockout::is_auth_failure(code) {
-            self.auth_failures.record(&self.peer, self.command);
-        } else if self.hierarchy && lockout::is_bad_auth(code) {
-            self.auth_failures
-                .record_hierarchy(&self.peer, self.command);
-        }
+        self.auth_failures.record_response(
+            &self.peer,
+            self.command,
+            self.hierarchy,
+            response.code(),
+        );
     }
 }
 

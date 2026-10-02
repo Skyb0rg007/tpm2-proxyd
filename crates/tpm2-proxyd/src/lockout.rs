@@ -50,17 +50,6 @@ pub const DEFAULT_UID_LIMIT: u64 = 5;
 /// Default time for each count to forget one failure.
 pub const DEFAULT_RECOVERY_INTERVAL: Duration = Duration::from_secs(600);
 
-/// Whether `code` is a TPM response code that counted toward the lockout.
-pub fn is_auth_failure(code: u32) -> bool {
-    TpmRc::try_from(code).is_ok_and(|rc| rc.base() == TpmRcBase::AuthFail)
-}
-
-/// Whether `code` reports a wrong authorization the TPM doesn't count toward
-/// its lockout (`TPM_RC_BAD_AUTH`).
-pub fn is_bad_auth(code: u32) -> bool {
-    TpmRc::try_from(code).is_ok_and(|rc| rc.base() == TpmRcBase::BadAuth)
-}
-
 /// Whether `handle` is a hierarchy whose authorization the TPM doesn't
 /// protect against dictionary attacks: owner, lockout, endorsement, platform.
 pub fn is_hierarchy(handle: u32) -> bool {
@@ -143,43 +132,44 @@ impl AuthFailures {
         }
     }
 
-    /// Record a failure toward the TPM's lockout that `peer` caused by running
-    /// `command`, and log it.
-    pub fn record(&self, peer: &Peer, command: TpmCc) {
-        self.record_at(peer, command, Instant::now());
-    }
-
-    /// Record a wrong hierarchy authorization by `peer`, which counts toward
-    /// its own limit but not the TPM's lockout, and log it.
-    pub fn record_hierarchy(&self, peer: &Peer, command: TpmCc) {
-        let now = Instant::now();
-        let (uid_total, newly_locked_out) = {
-            let mut counts = self.counts.lock().unwrap();
-            self.count_for_uid(&mut counts, peer.uid, now)
+    /// Count the authorization failure, if any, that the TPM's response `code`
+    /// to `peer`'s `command` reports, and log it. `hierarchy` is whether the
+    /// command authorizes a hierarchy.
+    pub fn record_response(&self, peer: &Peer, command: TpmCc, hierarchy: bool, code: u32) {
+        let Ok(rc) = TpmRc::try_from(code) else {
+            return;
         };
-        tracing::warn!(
-            uid = peer.uid,
-            pid = peer.pid,
-            command = %command,
-            uid_failures = uid_total,
-            "wrong hierarchy authorization"
-        );
-        if newly_locked_out {
-            self.log_locked_out(peer, uid_total);
+        match rc.base() {
+            TpmRcBase::AuthFail => self.record(peer, command, true, Instant::now()),
+            TpmRcBase::BadAuth if hierarchy => self.record(peer, command, false, Instant::now()),
+            _ => {}
         }
     }
 
-    fn record_at(&self, peer: &Peer, command: TpmCc, now: Instant) {
+    /// Record a failure by `peer` running `command`, and log it. It counts
+    /// toward the total if the TPM counted it toward its lockout, and toward
+    /// the UID's count either way.
+    fn record(&self, peer: &Peer, command: TpmCc, counted_by_tpm: bool, now: Instant) {
         let (total, uid_total, newly_locked_out) = {
             let mut counts = self.counts.lock().unwrap();
-            counts.total.recover(self.recovery_interval, now);
-            counts.total.count += 1;
+            if counted_by_tpm {
+                counts.total.recover(self.recovery_interval, now);
+                counts.total.count += 1;
+            }
             let total = counts.total.count;
             let (uid_total, newly_locked_out) = self.count_for_uid(&mut counts, peer.uid, now);
             (total, uid_total, newly_locked_out)
         };
 
-        if self.warn_threshold != 0 && total >= self.warn_threshold {
+        if !counted_by_tpm {
+            tracing::warn!(
+                uid = peer.uid,
+                pid = peer.pid,
+                command = %command,
+                uid_failures = uid_total,
+                "wrong hierarchy authorization"
+            );
+        } else if self.warn_threshold != 0 && total >= self.warn_threshold {
             tracing::warn!(
                 uid = peer.uid,
                 pid = peer.pid,
@@ -200,7 +190,13 @@ impl AuthFailures {
             );
         }
         if newly_locked_out {
-            self.log_locked_out(peer, uid_total);
+            tracing::warn!(
+                uid = peer.uid,
+                uid_failures = uid_total,
+                limit = self.uid_limit,
+                recovery_interval = ?self.recovery_interval,
+                "user reached the authorization failure limit; refusing its commands until its failures recover"
+            );
         }
     }
 
@@ -217,16 +213,6 @@ impl AuthFailures {
             !state.locked_out && self.uid_limit != 0 && state.failures.count >= self.uid_limit;
         state.locked_out |= newly_locked_out;
         (state.failures.count, newly_locked_out)
-    }
-
-    fn log_locked_out(&self, peer: &Peer, uid_total: u64) {
-        tracing::warn!(
-            uid = peer.uid,
-            uid_failures = uid_total,
-            limit = self.uid_limit,
-            recovery_interval = ?self.recovery_interval,
-            "user reached the authorization failure limit; refusing its commands until its failures recover"
-        );
     }
 
     /// Whether `uid` is locked out.
@@ -284,24 +270,41 @@ mod tests {
 
     const MINUTE: Duration = Duration::from_secs(60);
 
-    #[test]
-    fn recognizes_lockout_failures() {
-        // TPM_RC_AUTH_FAIL, alone and for session 1.
-        assert!(is_auth_failure(0x08e));
-        assert!(is_auth_failure(0x98e));
-        // TPM_RC_BAD_AUTH has no DA implications.
-        assert!(!is_auth_failure(0x9a2));
-        assert!(!is_auth_failure(0));
-        // TPM_RC_AUTH_FAIL's value in another layer isn't from the TPM.
-        assert!(!is_auth_failure(0x000b_008e));
+    /// Record a `TPM_RC_AUTH_FAIL` (for session 1) by `peer` at `now`.
+    fn fail(failures: &AuthFailures, peer: &Peer, now: Instant) {
+        failures.record(peer, TpmCc::Unseal, true, now);
     }
 
     #[test]
-    fn recognizes_wrong_hierarchy_authorizations() {
-        // TPM_RC_BAD_AUTH, alone and for session 1.
-        assert!(is_bad_auth(0x0a2));
-        assert!(is_bad_auth(0x9a2));
-        assert!(!is_bad_auth(0x98e));
+    fn counts_only_failures_toward_the_lockout() {
+        // (response code, whether the command authorizes a hierarchy, the
+        // total count, the UID's count)
+        let cases = [
+            // TPM_RC_AUTH_FAIL, alone and for session 1.
+            (0x08e, false, 1, 1),
+            (0x98e, false, 1, 1),
+            // TPM_RC_AUTH_FAIL's value in another layer isn't from the TPM.
+            (0x000b_008e, false, 0, 0),
+            // TPM_RC_BAD_AUTH: the TPM doesn't count it, so neither does the
+            // total, but a hierarchy's counts toward the UID's limit.
+            (0x9a2, false, 0, 0),
+            (0x0a2, true, 0, 1),
+            (0x9a2, true, 0, 1),
+            (0, true, 0, 0),
+        ];
+        for (code, hierarchy, total, uid) in cases {
+            let failures = AuthFailures::new(0, 0, Duration::ZERO);
+            failures.record_response(&Peer::new(1000, 100), TpmCc::Unseal, hierarchy, code);
+            assert_eq!(
+                (failures.total(), failures.for_uid(1000)),
+                (total, uid),
+                "{code:#x}, hierarchy: {hierarchy}"
+            );
+        }
+    }
+
+    #[test]
+    fn recognizes_hierarchies() {
         for hierarchy in [0x4000_0001, 0x4000_000a, 0x4000_000b, 0x4000_000c] {
             assert!(is_hierarchy(hierarchy));
         }
@@ -311,26 +314,13 @@ mod tests {
     }
 
     #[test]
-    fn counts_in_total_and_per_uid() {
-        let failures = AuthFailures::new(0, 0, Duration::ZERO);
-        failures.record(&Peer::new(1000, 100), TpmCc::Unseal);
-        failures.record(&Peer::new(1000, 100), TpmCc::Unseal);
-        failures.record(&Peer::new(1001, 100), TpmCc::Sign);
-
-        assert_eq!(failures.total(), 3);
-        assert_eq!(failures.for_uid(1000), 2);
-        assert_eq!(failures.for_uid(1001), 1);
-        assert_eq!(failures.for_uid(1002), 0);
-    }
-
-    #[test]
     fn locks_out_a_uid_at_its_limit() {
         let failures = AuthFailures::new(0, 2, Duration::ZERO);
         let peer = Peer::new(1000, 100);
 
-        failures.record(&peer, TpmCc::Unseal);
+        fail(&failures, &peer, Instant::now());
         assert!(!failures.is_locked_out(1000));
-        failures.record(&peer, TpmCc::Unseal);
+        fail(&failures, &peer, Instant::now());
         assert!(failures.is_locked_out(1000));
         // Other users aren't affected.
         assert!(!failures.is_locked_out(1001));
@@ -340,7 +330,7 @@ mod tests {
     fn a_zero_limit_never_locks_out() {
         let failures = AuthFailures::new(0, 0, Duration::ZERO);
         for _ in 0..100 {
-            failures.record(&Peer::new(1000, 100), TpmCc::Unseal);
+            fail(&failures, &Peer::new(1000, 100), Instant::now());
         }
         assert!(!failures.is_locked_out(1000));
     }
@@ -351,7 +341,7 @@ mod tests {
         let peer = Peer::new(1000, 100);
         let start = Instant::now();
         for _ in 0..3 {
-            failures.record_at(&peer, TpmCc::Unseal, start);
+            fail(&failures, &peer, start);
         }
 
         failures.is_locked_out_at(1000, start + MINUTE - Duration::from_secs(1));
@@ -363,7 +353,7 @@ mod tests {
         assert_eq!(failures.for_uid(1000), 1);
 
         // The total recovers too, as of the next failure.
-        failures.record_at(&Peer::new(1001, 100), TpmCc::Unseal, start + MINUTE * 2);
+        fail(&failures, &Peer::new(1001, 100), start + MINUTE * 2);
         assert_eq!(failures.total(), 2);
     }
 
@@ -372,15 +362,15 @@ mod tests {
         let failures = AuthFailures::new(0, 2, MINUTE);
         let peer = Peer::new(1000, 100);
         let start = Instant::now();
-        failures.record_at(&peer, TpmCc::Unseal, start);
-        failures.record_at(&peer, TpmCc::Unseal, start);
+        fail(&failures, &peer, start);
+        fail(&failures, &peer, start);
 
         assert!(failures.is_locked_out_at(1000, start + MINUTE / 2));
         // One failure recovered leaves the count below the limit.
         assert!(!failures.is_locked_out_at(1000, start + MINUTE));
 
         // Failing again locks it out again.
-        failures.record_at(&peer, TpmCc::Unseal, start + MINUTE);
+        fail(&failures, &peer, start + MINUTE);
         assert!(failures.is_locked_out_at(1000, start + MINUTE));
     }
 
@@ -388,7 +378,7 @@ mod tests {
     fn fully_recovered_uids_are_forgotten() {
         let failures = AuthFailures::new(0, 0, MINUTE);
         let start = Instant::now();
-        failures.record_at(&Peer::new(1000, 100), TpmCc::Unseal, start);
+        fail(&failures, &Peer::new(1000, 100), start);
 
         assert!(!failures.is_locked_out_at(1000, start + MINUTE));
         assert!(failures.counts.lock().unwrap().by_uid.is_empty());
