@@ -146,6 +146,13 @@ code, which tpm2-tss decodes as a TPM error the resource manager reported:
 `TPM_RC_HANDLE` with the handle's position for a handle it doesn't allow. The
 connection stays open, and the denial is logged with the peer's UID and PID.
 
+A client can cause as many denials, admissions and refused connections as it
+likes, so the log lines for them are limited per UID: 20 of each kind a minute,
+after which one warning says further ones are held back, and the next line
+logged reports how many were. Otherwise one user could push the daemon past
+journald's rate limit, which would drop everyone's messages, other users'
+denials included.
+
 Connection priority is capped by the same rules. The cap is applied once when a
 client is admitted, so the effective priority remains fixed for the connection
 lifetime. `SIGHUP` reloads the policy and its profiles together and swaps them in

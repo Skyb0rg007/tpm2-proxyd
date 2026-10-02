@@ -30,6 +30,7 @@ use std::{
 
 use crate::{
     lockout::{self, AuthFailures},
+    log_limit::{Kind, limited},
     policy::{Denial, Policy},
     scheduler::{CommandScheduler, ExecuteError, Priority, Session, TransactionGuard},
     server::peer::Peer,
@@ -84,14 +85,16 @@ impl Broker {
     pub fn admit(&self, peer: Peer, requested_priority: Priority) -> Client {
         let policy = self.policy.read().unwrap();
         let priority = policy.cap_priority(&peer, requested_priority);
-        tracing::info!(
-            uid = peer.uid,
+        limited!(
+            info,
+            peer.uid,
+            Kind::Admission,
+            "client admitted",
             gid = peer.primary_gid,
             pid = peer.pid,
             profile = policy.profile_name(&peer),
             requested_priority = requested_priority.0,
             priority = priority.0,
-            "client admitted"
         );
         drop(policy);
         Client {
@@ -149,12 +152,14 @@ impl Client {
                 _ => Ok(()),
             });
         if let Err(denial) = authorized {
-            tracing::warn!(
-                uid = self.peer.uid,
+            limited!(
+                warn,
+                self.peer.uid,
+                Kind::Denial,
+                "command denied",
                 pid = self.peer.pid,
                 command = %command.code(),
                 %denial,
-                "command denied"
             );
             return Err(BrokerError::Denied {
                 command_code: command.code().value(),

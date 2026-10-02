@@ -19,6 +19,7 @@ use tokio::task::JoinSet;
 use crate::{
     broker::{Broker, BrokerError, Client},
     lockout,
+    log_limit::{Kind, limited},
     scheduler::Priority,
     server::{
         hello::{self, Hello, HelloStatus},
@@ -318,11 +319,13 @@ where
     let _guard = match registry.register(peer.uid) {
         Ok(guard) => guard,
         Err(full) => {
-            tracing::warn!(
-                uid = peer.uid,
+            limited!(
+                warn,
+                peer.uid,
+                Kind::Busy,
+                "connection limit reached; rejecting client",
                 pid = peer.pid,
                 ?full,
-                "connection limit reached; rejecting client"
             );
             stream
                 .write_hello_reply(HelloStatus::Busy, Priority(0))
