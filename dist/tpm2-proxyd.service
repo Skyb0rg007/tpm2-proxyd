@@ -21,8 +21,9 @@ WatchdogSec=30
 # of the TPM device group so it can open /dev/tpmrm0.
 User=tpm2-proxyd
 SupplementaryGroups=tss
-RuntimeDirectory=tpm2-proxyd
-RuntimeDirectoryMode=0755
+# No RuntimeDirectory=: tpm2-proxyd.socket creates /run/tpm2-proxyd, and
+# systemd would delete it (socket included) whenever this service stops,
+# leaving the socket unit listening on a path clients can no longer reach.
 ConfigurationDirectory=tpm2-proxyd
 
 # Sandboxing. The proxy only needs the TPM resource-manager device and AF_UNIX.

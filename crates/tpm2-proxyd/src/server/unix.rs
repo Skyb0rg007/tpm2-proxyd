@@ -23,6 +23,15 @@ use crate::server::{
     peer::Peer,
 };
 
+/// Where the listening socket came from.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum SocketOrigin {
+    /// Passed in by systemd socket activation; systemd owns the path.
+    Activated,
+    /// Bound by the daemon, which should remove the path when it exits.
+    Bound,
+}
+
 /// Default mode for the temporary raw TPM socket.
 pub const DEFAULT_SOCKET_MODE: u32 = 0o660;
 
@@ -83,16 +92,17 @@ impl RawTpmListener<UnixPeerResolver> {
     /// With socket activation the listening socket is created (and its
     /// permissions/ownership set) by the `.socket` unit; otherwise the daemon
     /// binds `path` itself via [`Self::bind_prepared`].
-    pub fn from_systemd_or_bind(path: impl AsRef<Path>) -> io::Result<Self> {
+    pub fn from_systemd_or_bind(path: impl AsRef<Path>) -> io::Result<(Self, SocketOrigin)> {
         if let Ok(mut fds) = crate::systemd::sd_listen_fds()
             && fds.len() == 1
         {
             let fd = fds.pop().expect("exactly one fd");
             let listener = std::os::unix::net::UnixListener::from(fd);
             listener.set_nonblocking(true)?;
-            return Ok(Self::from_listener(UnixListener::from_std(listener)?));
+            let listener = Self::from_listener(UnixListener::from_std(listener)?);
+            return Ok((listener, SocketOrigin::Activated));
         }
-        Self::bind_prepared(path)
+        Ok((Self::bind_prepared(path)?, SocketOrigin::Bound))
     }
 }
 

@@ -92,7 +92,7 @@ async fn run(options: cli::Options) -> anyhow::Result<()> {
         options.max_connections_per_uid,
     );
 
-    let listener = server::unix::RawTpmListener::from_systemd_or_bind(&options.socket)
+    let (listener, origin) = server::unix::RawTpmListener::from_systemd_or_bind(&options.socket)
         .with_context(|| format!("binding raw TPM socket {}", options.socket.display()))?;
 
     let (shutdown_tx, shutdown_rx) = watch::channel(false);
@@ -117,9 +117,11 @@ async fn run(options: cli::Options) -> anyhow::Result<()> {
     .context("serving TPM socket");
 
     let _ = systemd::sd_notify("STOPPING=1");
-    // The daemon owns the raw socket only when it bound the path itself; under
-    // socket activation systemd owns it, so removal is best-effort.
-    let _ = std::fs::remove_file(&options.socket);
+    // Under socket activation systemd owns the path and keeps listening on it
+    // across restarts, so only remove a socket the daemon bound itself.
+    if origin == server::unix::SocketOrigin::Bound {
+        let _ = std::fs::remove_file(&options.socket);
+    }
     tracing::info!("tpm2-proxyd stopped");
 
     result
