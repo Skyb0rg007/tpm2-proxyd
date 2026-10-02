@@ -15,11 +15,6 @@
   tpm2-pkcs11,
 }:
 let
-  # The daemon and the TCTI module, which only a workspace build produces.
-  proxyd = tpm2-proxyd.overrideAttrs {
-    cargoBuildFlags = [ "--workspace" ];
-    doCheck = false;
-  };
   tests = lib.fileset.toSource {
     root = ../.;
     fileset = lib.fileset.unions [
@@ -37,8 +32,8 @@ let
     }:$PATH"
     "OPENSSL_MODULES=${tpm2-openssl}/lib/ossl-modules"
     "TPM2_PKCS11_MODULE=${tpm2-pkcs11}/lib/libtpm2_pkcs11.so"
-    "TPM2_PROXYD=${proxyd}/bin/tpm2-proxyd"
-    "TCTI_PROXY=${proxyd}/lib/libtss2_tcti_proxy.so"
+    "TPM2_PROXYD=${lib.getExe tpm2-proxyd}"
+    "TCTI_PROXY=${tpm2-proxyd}/lib/libtss2-tcti-proxy.so"
     "REQUIRE_ALL=1"
   ];
 in

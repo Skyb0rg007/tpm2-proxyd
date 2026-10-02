@@ -10,6 +10,7 @@
   openssl,
   swtpm,
   installShellFiles,
+  coreutils,
 }:
 rustPlatform.buildRustPackage (finalAttrs: {
   pname = "tpm2-proxyd";
@@ -17,6 +18,10 @@ rustPlatform.buildRustPackage (finalAttrs: {
   src = lib.sources.cleanSource ../.;
 
   cargoLock.lockFile = ../Cargo.lock;
+
+  # The workspace's default members are only the daemon; build the TCTI module
+  # (crates/tcti) too, so the cargo install hook ships libtss2_tcti_proxy.so.
+  cargoBuildFlags = [ "--workspace" ];
 
   nativeBuildInputs = [
     asciidoctor
@@ -34,8 +39,15 @@ rustPlatform.buildRustPackage (finalAttrs: {
   '';
 
   postInstall = ''
+    # tpm2-tss's loader looks for libtss2-tcti-<name>.so; Cargo names it with
+    # underscores.
+    ln -s libtss2_tcti_proxy.so "$out/lib/libtss2-tcti-proxy.so"
+
     install -Dm0644 dist/tpm2-proxyd.service \
       "$out/lib/systemd/system/tpm2-proxyd.service"
+    substituteInPlace "$out/lib/systemd/system/tpm2-proxyd.service" \
+      --replace-fail "ExecStart=/usr/bin/tpm2-proxyd" "ExecStart=$out/bin/tpm2-proxyd" \
+      --replace-fail "ExecReload=/bin/kill" "ExecReload=${coreutils}/bin/kill"
     install -Dm0644 dist/tpm2-proxyd.socket \
       "$out/lib/systemd/system/tpm2-proxyd.socket"
     install -Dm0644 dist/tpm2-proxyd.sysusers \
