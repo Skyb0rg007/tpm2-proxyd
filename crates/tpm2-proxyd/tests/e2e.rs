@@ -164,6 +164,15 @@ fn shipped_standard_profile() {
     // profile doesn't allow persistent handles.
     let response = client.transact(&common::read_public(0x8100_0001)).unwrap();
     assert_eq!(common::response_code(&response), common::RC_HANDLE_1_DENIED);
+
+    // TPM2_ContextSave of a session: the kernel would stop tracking a saved
+    // session, which then holds a TPM session slot until reset. Saving a
+    // transient object is still allowed (this one doesn't exist, so the TPM
+    // itself answers with an error).
+    let response = client.transact(&common::context_save(0x0200_0000)).unwrap();
+    assert_eq!(common::response_code(&response), common::RC_HANDLE_1_DENIED);
+    let response = client.transact(&common::context_save(0x8000_0000)).unwrap();
+    assert_ne!(common::response_code(&response), common::RC_HANDLE_1_DENIED);
 }
 
 /// Unrecognized command codes are rejected at the proxy's parse boundary and

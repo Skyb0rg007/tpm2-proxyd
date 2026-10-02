@@ -100,14 +100,23 @@ isn't checked.
 
 This handle check is enough because each client has its own `/dev/tpmrm0`
 handle. The kernel resource manager gives every handle its own space of
-transient objects and sessions, so a client can't name another client's objects
-or sessions, and it flushes them when the client disconnects. What the kernel
-doesn't isolate is state all users share: persistent handles, NV indices,
-hierarchy authorization and settings, PCR values, the clock, and the
-dictionary-attack lockout. A profile keeps users away from that state by not
-allowing the commands that change it and the handles that name it. The
+transient objects, so a client can't name another client's objects, and it
+flushes the objects and sessions a client leaves loaded when it disconnects.
+What the kernel doesn't isolate is state all users share: persistent handles,
+NV indices, hierarchy authorization and settings, PCR values, the clock, and
+the dictionary-attack lockout. A profile keeps users away from that state by
+not allowing the commands that change it and the handles that name it. The
 `standard` profile allows only transient objects, sessions and the null
 hierarchy, plus the owner and endorsement hierarchies for `CreatePrimary`.
+
+Sessions are only partly isolated. The kernel doesn't virtualize session
+handles, and once a client saves a session with `TPM2_ContextSave` the kernel
+stops tracking it, so it is never flushed and holds one of the TPM's few
+session slots (typically 64) until the TPM resets. A user allowed to save
+sessions could fill every slot, so `standard` lets `ContextSave` name only
+transient objects. The cost is that a session can't be carried from one
+process to the next (`tpm2_startauthsession -S`); a session used within one
+process is unaffected.
 
 A denied command isn't forwarded. The client gets a header-only error response
 in the resource-manager layer (`TSS2_RESMGR_RC_LAYER`) carrying a TPM-format

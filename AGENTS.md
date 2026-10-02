@@ -99,9 +99,12 @@ per-client sessions) → `upstream` (the TPM).
   **No profiles are built into the binary**; `dist/profiles/standard.json` is
   installed with the service. Keep it that way.
 - The handle check relies on the per-client `/dev/tpmrm0` fd: the kernel RM
-  already isolates transient objects and sessions, so profiles only need to
-  keep users away from shared state (persistent handles, NV, hierarchies, PCRs,
-  clock, DA). Don't add in-memory ownership tracking for transient handles.
+  already isolates transient objects, so profiles only need to keep users away
+  from shared state (persistent handles, NV, hierarchies, PCRs, clock, DA).
+  Don't add in-memory ownership tracking for transient handles. Sessions are
+  the exception: the kernel doesn't virtualize their handles and forgets a
+  session the client saves, which then holds a TPM session slot until reset,
+  so `standard` only allows `ContextSave` on transient handles.
 - A denied command gets a header-only response with a TPM-format code in the
   resource-manager layer (`Denial::response_code`: `TPM_RC_COMMAND_CODE`, or
   `TPM_RC_HANDLE` + position) and the connection stays open. tpm2-tss decodes

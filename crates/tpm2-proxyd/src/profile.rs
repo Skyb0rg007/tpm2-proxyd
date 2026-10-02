@@ -30,7 +30,12 @@
 //!
 //! Only the command's handle area is checked. Sessions in the authorization
 //! area are left to the kernel resource manager, which gives every connection
-//! its own set of transient objects and sessions.
+//! its own set of transient objects and flushes the objects and sessions a
+//! connection leaves loaded. It doesn't virtualize session handles, though,
+//! and it stops tracking a session the client saves with `TPM2_ContextSave`,
+//! so that session outlives the connection. A profile that lets users save
+//! sessions lets them fill the TPM's session slots for everyone; the shipped
+//! `standard` profile only lets them save transient objects.
 
 use std::{
     collections::{HashMap, HashSet},

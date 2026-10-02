@@ -47,6 +47,7 @@ pub mod cc {
     pub const PCR_READ: u32 = 0x0000_017e;
     pub const READ_PUBLIC: u32 = 0x0000_0173;
     pub const CLEAR: u32 = 0x0000_0126;
+    pub const CONTEXT_SAVE: u32 = 0x0000_0162;
 }
 
 /// `TPM_CAP` values for `GetCapability`.
@@ -91,6 +92,9 @@ pub fn startup_clear() -> Vec<u8> {
 }
 pub fn read_public(handle: u32) -> Vec<u8> {
     frame(NO_SESSIONS, cc::READ_PUBLIC, &handle.to_be_bytes())
+}
+pub fn context_save(handle: u32) -> Vec<u8> {
+    frame(NO_SESSIONS, cc::CONTEXT_SAVE, &handle.to_be_bytes())
 }
 /// `TPM2_Clear` authorized by the lockout hierarchy with an empty password.
 pub fn clear() -> Vec<u8> {
