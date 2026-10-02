@@ -48,6 +48,8 @@ pub mod cc {
     pub const READ_PUBLIC: u32 = 0x0000_0173;
     pub const CLEAR: u32 = 0x0000_0126;
     pub const CONTEXT_SAVE: u32 = 0x0000_0162;
+    pub const START_AUTH_SESSION: u32 = 0x0000_0176;
+    pub const FLUSH_CONTEXT: u32 = 0x0000_0165;
 }
 
 /// `TPM_CAP` values for `GetCapability`.
@@ -92,6 +94,26 @@ pub fn startup_clear() -> Vec<u8> {
 }
 pub fn read_public(handle: u32) -> Vec<u8> {
     frame(NO_SESSIONS, cc::READ_PUBLIC, &handle.to_be_bytes())
+}
+/// An unbound, unsalted HMAC session using SHA-256.
+pub fn start_auth_session() -> Vec<u8> {
+    let mut body = Vec::new();
+    body.extend_from_slice(&0x4000_0007u32.to_be_bytes()); // tpmKey: TPM_RH_NULL
+    body.extend_from_slice(&0x4000_0007u32.to_be_bytes()); // bind: TPM_RH_NULL
+    body.extend_from_slice(&16u16.to_be_bytes()); // nonceCaller
+    body.extend_from_slice(&[0x5a; 16]);
+    body.extend_from_slice(&0u16.to_be_bytes()); // encryptedSalt
+    body.push(0x00); // TPM_SE_HMAC
+    body.extend_from_slice(&0x0010u16.to_be_bytes()); // symmetric: TPM_ALG_NULL
+    body.extend_from_slice(&0x000bu16.to_be_bytes()); // authHash: TPM_ALG_SHA256
+    frame(NO_SESSIONS, cc::START_AUTH_SESSION, &body)
+}
+pub fn flush_context(handle: u32) -> Vec<u8> {
+    frame(NO_SESSIONS, cc::FLUSH_CONTEXT, &handle.to_be_bytes())
+}
+/// The first handle in a response's handle area.
+pub fn response_handle(response: &[u8]) -> u32 {
+    u32::from_be_bytes(response[10..14].try_into().expect("response has a handle"))
 }
 pub fn context_save(handle: u32) -> Vec<u8> {
     frame(NO_SESSIONS, cc::CONTEXT_SAVE, &handle.to_be_bytes())
@@ -146,6 +168,10 @@ pub fn current_uid() -> u32 {
 /// The proxy's response to a command the policy denies: `TPM_RC_COMMAND_CODE`
 /// in the resource-manager layer.
 pub const RC_COMMAND_DENIED: u32 = 0x000b_0143;
+/// The proxy's response to `TPM2_FlushContext` of a session the connection
+/// doesn't hold: `TPM_RC_HANDLE + TPM_RC_P + TPM_RC_1` in the resource-manager
+/// layer.
+pub const RC_NOT_OWN_SESSION: u32 = 0x000b_01cb;
 /// The proxy's response to a command whose first handle the policy denies:
 /// `TPM_RC_HANDLE + TPM_RC_1` in the resource-manager layer.
 pub const RC_HANDLE_1_DENIED: u32 = 0x000b_018b;

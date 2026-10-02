@@ -107,7 +107,9 @@ per-client sessions) → `upstream` (the TPM).
   Don't add in-memory ownership tracking for transient handles. Sessions are
   the exception: the kernel doesn't virtualize their handles and forgets a
   session the client saves, which then holds a TPM session slot until reset,
-  so `standard` only allows `ContextSave` on transient handles.
+  so `standard` only allows `ContextSave` on transient handles. And since any
+  client can name any session, the broker tracks each connection's sessions
+  and refuses `FlushContext` of anyone else's.
 - A denied command gets a header-only response with a TPM-format code in the
   resource-manager layer (`Denial::response_code`: `TPM_RC_COMMAND_CODE`, or
   `TPM_RC_HANDLE` + position) and the connection stays open. tpm2-tss decodes

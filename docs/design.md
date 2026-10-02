@@ -121,6 +121,14 @@ transient objects. The cost is that a session can't be carried from one
 process to the next (`tpm2_startauthsession -S`); a session used within one
 process is unaffected.
 
+For the same reason any client can name any session, and `TPM2_FlushContext`
+takes its handle as a parameter, where profiles can't check it. The broker
+therefore tracks the sessions each connection holds: those it started
+(`StartAuthSession`) or loaded (`ContextLoad`), minus those it flushed or used
+without `continueSession`. Flushing any other session is denied with
+`TPM_RC_HANDLE` for parameter 1 in the resource-manager layer, so one user
+can't end another's session mid-workflow.
+
 A denied command isn't forwarded. The client gets a header-only error response
 in the resource-manager layer (`TSS2_RESMGR_RC_LAYER`) carrying a TPM-format
 code, which tpm2-tss decodes as a TPM error the resource manager reported:

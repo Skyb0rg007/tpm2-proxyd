@@ -176,6 +176,35 @@ fn shipped_standard_profile() {
     assert_ne!(common::response_code(&response), common::RC_HANDLE_1_DENIED);
 }
 
+/// A connection may flush only its own sessions: session handles aren't
+/// virtualized, so another user could otherwise end them mid-workflow.
+#[test]
+fn only_a_sessions_owner_may_flush_it() {
+    let standard = std::fs::read_to_string(concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/../../dist/profiles/standard.json"
+    ))
+    .expect("read the shipped standard profile");
+    let env = common::TestEnv::start(
+        &common::policy_for_current_user("standard"),
+        &[("standard", &standard)],
+    );
+    let mut owner = env.connect();
+    let mut other = env.connect();
+
+    let response = owner.transact(&common::start_auth_session()).unwrap();
+    assert!(common::is_success(&response));
+    let session = common::response_handle(&response);
+
+    let response = other.transact(&common::flush_context(session)).unwrap();
+    assert_eq!(common::response_code(&response), common::RC_NOT_OWN_SESSION);
+    let response = owner.transact(&common::flush_context(session)).unwrap();
+    assert!(common::is_success(&response));
+    // Once flushed, it's no longer the owner's either.
+    let response = owner.transact(&common::flush_context(session)).unwrap();
+    assert_eq!(common::response_code(&response), common::RC_NOT_OWN_SESSION);
+}
+
 /// Unrecognized command codes are rejected at the proxy's parse boundary and
 /// never reach the TPM.
 #[test]

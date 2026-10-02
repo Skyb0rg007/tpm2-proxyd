@@ -113,6 +113,11 @@ pub enum Denial {
         /// Why.
         refusal: Refusal,
     },
+    /// `TPM2_FlushContext` of a session the connection doesn't hold.
+    NotOwnSession {
+        /// The session handle.
+        handle: u32,
+    },
 }
 
 impl Denial {
@@ -127,12 +132,15 @@ impl Denial {
         const RESMGR_LAYER: u32 = 11 << 16;
         const TPM_RC_COMMAND_CODE: u32 = 0x143;
         const TPM_RC_HANDLE: u32 = 0x08b;
+        const TPM_RC_P: u32 = 0x040;
         RESMGR_LAYER
             | match self {
                 Self::Refused {
                     refusal: Refusal::Handle { position, .. },
                     ..
                 } => TPM_RC_HANDLE | ((*position as u32) << 8),
+                // FlushContext's handle is its first parameter.
+                Self::NotOwnSession { .. } => TPM_RC_HANDLE | TPM_RC_P | (1 << 8),
                 _ => TPM_RC_COMMAND_CODE,
             }
     }
@@ -143,6 +151,9 @@ impl fmt::Display for Denial {
         match self {
             Self::NoProfile => write!(f, "no profile"),
             Self::Refused { profile, refusal } => write!(f, "profile {profile}: {refusal}"),
+            Self::NotOwnSession { handle } => {
+                write!(f, "session {handle:#010x} isn't the connection's")
+            }
         }
     }
 }

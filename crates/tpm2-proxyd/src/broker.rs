@@ -10,12 +10,22 @@
 //! policy, and only then submits it to the serialized upstream worker. It also
 //! counts the authorization failures in the TPM's responses that push it toward
 //! dictionary-attack lockout (see [`crate::lockout`]).
+//!
+//! It also tracks which sessions each connection holds. The kernel resource
+//! manager doesn't virtualize session handles, so any client can name any
+//! session, and `TPM2_FlushContext` takes its handle as a parameter, where
+//! profiles can't check it. A connection may flush only sessions it started
+//! or loaded; anything else would let one user destroy another's session
+//! mid-workflow.
 
 #![allow(dead_code)] // Main/config wiring is implemented in a later change.
 
-use std::sync::{
-    Arc, RwLock,
-    atomic::{AtomicU64, Ordering},
+use std::{
+    collections::HashSet,
+    sync::{
+        Arc, Mutex, RwLock,
+        atomic::{AtomicU64, Ordering},
+    },
 };
 
 use crate::{
@@ -89,6 +99,7 @@ impl Broker {
             session: self.scheduler.open_session(),
             peer,
             priority,
+            tpm_sessions: Mutex::new(HashSet::new()),
         }
     }
 }
@@ -100,6 +111,13 @@ pub struct Client {
     session: Session,
     peer: Peer,
     priority: Priority,
+    /// Handles of the TPM sessions this connection holds.
+    tpm_sessions: Mutex<HashSet<u32>>,
+}
+
+/// Whether `handle` is an HMAC or policy session.
+fn is_session(handle: u32) -> bool {
+    matches!(handle >> 24, 0x02 | 0x03)
 }
 
 impl Client {
@@ -120,7 +138,16 @@ impl Client {
             .policy
             .read()
             .unwrap()
-            .authorize(&self.peer, &command);
+            .authorize(&self.peer, &command)
+            .and_then(|()| match command.flush_handle() {
+                Some(handle)
+                    if is_session(handle)
+                        && !self.tpm_sessions.lock().unwrap().contains(&handle) =>
+                {
+                    Err(Denial::NotOwnSession { handle })
+                }
+                _ => Ok(()),
+            });
         if let Err(denial) = authorized {
             tracing::warn!(
                 uid = self.peer.uid,
@@ -136,6 +163,8 @@ impl Client {
         }
 
         let code = command.code();
+        let flushed = command.flush_handle();
+        let sessions = command.sessions();
         let guard = LockoutGuard {
             auth_failures: self.broker.auth_failures.clone(),
             peer: self.peer.clone(),
@@ -147,9 +176,48 @@ impl Client {
             .execute(self.priority, command, Some(Box::new(guard)))
             .await
         {
-            Ok(response) => Ok(response),
+            Ok(response) => {
+                self.track_sessions(code, flushed, &sessions, &response);
+                Ok(response)
+            }
             Err(ExecuteError::Refused) => Err(self.locked_out(code)),
             Err(error) => Err(error.into()),
+        }
+    }
+
+    /// Update the connection's sessions after `response` to a command.
+    fn track_sessions(
+        &self,
+        code: TpmCc,
+        flushed: Option<u32>,
+        sessions: &[(u32, bool)],
+        response: &Response,
+    ) {
+        let mut held = self.tpm_sessions.lock().unwrap();
+        // A session used without continueSession ends with the command. It
+        // stays open if the command fails, but forgetting it then only stops
+        // this connection flushing it, and the kernel flushes it on disconnect;
+        // remembering a handle the TPM may hand to someone else would be worse.
+        for (handle, keep) in sessions {
+            if !keep {
+                held.remove(handle);
+            }
+        }
+        if response.code() != 0 {
+            return;
+        }
+        match code {
+            TpmCc::StartAuthSession | TpmCc::ContextLoad => {
+                if let Some(handle) = response.first_handle().filter(|&h| is_session(h)) {
+                    held.insert(handle);
+                }
+            }
+            TpmCc::FlushContext => {
+                if let Some(handle) = flushed {
+                    held.remove(&handle);
+                }
+            }
+            _ => {}
         }
     }
 

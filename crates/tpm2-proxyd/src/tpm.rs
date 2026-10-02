@@ -81,6 +81,57 @@ impl Command {
         &self.handles
     }
 
+    /// The handle `TPM2_FlushContext` would flush (its first parameter), or
+    /// `None` for any other command.
+    pub fn flush_handle(&self) -> Option<u32> {
+        if self.code != TpmCc::FlushContext {
+            return None;
+        }
+        let start = HEADER_SIZE + 4 * self.handles.len();
+        let bytes = self.bytes.get(start..start + 4)?;
+        Some(u32::from_be_bytes(bytes.try_into().expect("four bytes")))
+    }
+
+    /// The sessions in the authorization area, each with whether the command
+    /// keeps it open (`continueSession`). Empty for a command without one.
+    pub fn sessions(&self) -> Vec<(u32, bool)> {
+        const CONTINUE_SESSION: u8 = 0x01;
+        let mut sessions = Vec::new();
+        if self.bytes[..2] != TpmSt::Sessions.value().to_be_bytes() {
+            return sessions;
+        }
+        let start = HEADER_SIZE + 4 * self.handles.len();
+        let mut rest = match self.bytes.get(start..start + 4) {
+            Some(size) => {
+                let size = u32::from_be_bytes(size.try_into().expect("four bytes")) as usize;
+                self.bytes
+                    .get(start + 4..start + 4 + size)
+                    .unwrap_or_default()
+            }
+            None => return sessions,
+        };
+        // TPMS_AUTH_COMMAND: handle, nonce (TPM2B), attributes, hmac (TPM2B).
+        let sized = |bytes: &[u8]| -> Option<usize> {
+            let size = u16::from_be_bytes(bytes.get(..2)?.try_into().ok()?) as usize;
+            (bytes.len() >= 2 + size).then_some(2 + size)
+        };
+        while rest.len() >= 4 {
+            let handle = u32::from_be_bytes(rest[..4].try_into().expect("four bytes"));
+            let Some(nonce) = sized(&rest[4..]) else {
+                break;
+            };
+            let Some(&attributes) = rest.get(4 + nonce) else {
+                break;
+            };
+            let Some(hmac) = sized(&rest[5 + nonce..]) else {
+                break;
+            };
+            sessions.push((handle, attributes & CONTINUE_SESSION != 0));
+            rest = &rest[5 + nonce + hmac..];
+        }
+        sessions
+    }
+
     /// Return whether this packet carries `code`.
     pub fn is_code(&self, code: TpmCc) -> bool {
         self.code == code
@@ -124,6 +175,14 @@ impl Response {
         }
         validate_tag(&bytes)?;
         Ok(Self(bytes))
+    }
+
+    /// The first handle in a successful response's handle area, which is
+    /// where commands such as `TPM2_StartAuthSession` and `TPM2_ContextLoad`
+    /// return the handle they created.
+    pub fn first_handle(&self) -> Option<u32> {
+        let bytes = self.0.get(HEADER_SIZE..HEADER_SIZE + 4)?;
+        Some(u32::from_be_bytes(bytes.try_into().expect("four bytes")))
     }
 
     /// The response code from the header.
@@ -296,6 +355,36 @@ mod tests {
                 declared: 11,
                 actual: 10,
             })
+        );
+    }
+
+    #[test]
+    fn finds_the_handle_flush_context_flushes() {
+        let flush = command(0x165, &0x0200_0001u32.to_be_bytes());
+        let flush = Command::parse(flush, 4096).unwrap();
+        assert_eq!(flush.flush_handle(), Some(0x0200_0001));
+        let other = Command::parse(command(0x17b, &8u16.to_be_bytes()), 4096).unwrap();
+        assert_eq!(other.flush_handle(), None);
+    }
+
+    #[test]
+    fn lists_the_sessions_in_the_authorization_area() {
+        // TPM2_Unseal of 0x80000001 with an HMAC session that ends with the
+        // command (attributes 0) and a password session that continues.
+        let mut body = Vec::from(0x8000_0001u32.to_be_bytes());
+        let mut auth = Vec::new();
+        auth.extend_from_slice(&0x0200_0000u32.to_be_bytes());
+        auth.extend_from_slice(&[0, 2, 0xaa, 0xbb, 0x00, 0, 1, 0xcc]);
+        auth.extend_from_slice(&0x4000_0009u32.to_be_bytes());
+        auth.extend_from_slice(&[0, 0, 0x01, 0, 0]);
+        body.extend_from_slice(&(auth.len() as u32).to_be_bytes());
+        body.extend_from_slice(&auth);
+        let mut bytes = command(0x15e, &body);
+        bytes[..2].copy_from_slice(&TpmSt::Sessions.value().to_be_bytes());
+        let unseal = Command::parse(bytes, 4096).unwrap();
+        assert_eq!(
+            unseal.sessions(),
+            [(0x0200_0000, false), (0x4000_0009, true)]
         );
     }
 
