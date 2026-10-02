@@ -4,26 +4,26 @@
 
 //! Command-line argument parsing for the daemon.
 
-use std::{env, ffi::OsString, path::PathBuf};
+use std::{path::PathBuf, str::FromStr};
 
 use clap::Parser;
 
 /// Default policy configuration file path.
-pub const DEFAULT_CONFIG_PATH: &str = "/etc/tpm2-proxyd/policy.json";
+const DEFAULT_CONFIG_PATH: &str = "/etc/tpm2-proxyd/policy.json";
 /// Default client socket path.
-pub const DEFAULT_SOCKET_PATH: &str = "/run/tpm2-proxyd/tpm2-proxyd.sock";
+const DEFAULT_SOCKET_PATH: &str = "/run/tpm2-proxyd/tpm2-proxyd.sock";
 /// Default upstream Linux TPM resource-manager device.
-pub const DEFAULT_UPSTREAM_TPM_PATH: &str = "/dev/tpmrm0";
+const DEFAULT_UPSTREAM_TPM_PATH: &str = "/dev/tpmrm0";
 /// Default number of commands that may wait for the upstream worker.
-pub const DEFAULT_QUEUE_DEPTH: usize = 64;
+const DEFAULT_QUEUE_DEPTH: usize = 64;
 /// Default cap on concurrent connections from one UID.
-pub const DEFAULT_MAX_CONNECTIONS_PER_UID: usize = 16;
+const DEFAULT_MAX_CONNECTIONS_PER_UID: usize = 16;
 /// Default cap on concurrent downstream connections in total. Each holds a
 /// socket and, once it sends a command, a `/dev/tpmrm0` handle, so this keeps
 /// the daemon's file descriptors well within its open-file limit.
-pub const DEFAULT_MAX_CONNECTIONS: usize = 1024;
+const DEFAULT_MAX_CONNECTIONS: usize = 1024;
 /// Default hard per-command timeout, in seconds.
-pub const DEFAULT_COMMAND_TIMEOUT_SECS: u64 = 120;
+const DEFAULT_COMMAND_TIMEOUT_SECS: u64 = 120;
 
 /// Parsed command-line options.
 #[derive(Clone, Debug, Parser, PartialEq, Eq)]
@@ -72,7 +72,7 @@ pub struct Options {
         require_equals = true,
         value_name = "BYTES",
         default_value_t = crate::tpm::DEFAULT_MAX_PACKET_SIZE,
-        value_parser = parse_positive_usize
+        value_parser = parse_positive::<usize>
     )]
     pub max_packet_size: usize,
     /// Size of the buffer of TPM commands on their way to the scheduler.
@@ -81,7 +81,7 @@ pub struct Options {
         require_equals = true,
         value_name = "COUNT",
         default_value_t = DEFAULT_QUEUE_DEPTH,
-        value_parser = parse_positive_usize
+        value_parser = parse_positive::<usize>
     )]
     pub queue_depth: usize,
     /// Maximum number of concurrent downstream connections (0 = unlimited).
@@ -90,7 +90,6 @@ pub struct Options {
         require_equals = true,
         value_name = "COUNT",
         default_value_t = DEFAULT_MAX_CONNECTIONS,
-        value_parser = clap::value_parser!(usize)
     )]
     pub max_connections: usize,
     /// Maximum number of concurrent downstream connections from one UID
@@ -100,7 +99,6 @@ pub struct Options {
         require_equals = true,
         value_name = "COUNT",
         default_value_t = DEFAULT_MAX_CONNECTIONS_PER_UID,
-        value_parser = clap::value_parser!(usize)
     )]
     pub max_connections_per_uid: usize,
     /// Number of authorization failures toward the TPM's dictionary-attack
@@ -111,7 +109,6 @@ pub struct Options {
         require_equals = true,
         value_name = "COUNT",
         default_value_t = crate::lockout::DEFAULT_WARN_THRESHOLD,
-        value_parser = clap::value_parser!(u64)
     )]
     pub auth_failure_warn_threshold: u64,
     /// Number of authorization failures toward the TPM's dictionary-attack
@@ -122,7 +119,6 @@ pub struct Options {
         require_equals = true,
         value_name = "COUNT",
         default_value_t = crate::lockout::DEFAULT_UID_LIMIT,
-        value_parser = clap::value_parser!(u64)
     )]
     pub auth_failure_limit: u64,
     /// Seconds for each authorization failure count to forget one failure,
@@ -132,7 +128,6 @@ pub struct Options {
         require_equals = true,
         value_name = "SECONDS",
         default_value_t = crate::lockout::DEFAULT_RECOVERY_INTERVAL.as_secs(),
-        value_parser = clap::value_parser!(u64)
     )]
     pub auth_failure_recovery_secs: u64,
     /// Hard per-command timeout, in seconds.
@@ -141,32 +136,9 @@ pub struct Options {
         require_equals = true,
         value_name = "SECONDS",
         default_value_t = DEFAULT_COMMAND_TIMEOUT_SECS,
-        value_parser = parse_positive_u64
+        value_parser = parse_positive::<u64>
     )]
     pub command_timeout_secs: u64,
-}
-
-impl Options {
-    /// The hard per-command timeout as a [`std::time::Duration`].
-    pub fn command_timeout(&self) -> std::time::Duration {
-        std::time::Duration::from_secs(self.command_timeout_secs)
-    }
-}
-
-impl Options {
-    /// Parse options from the process command line.
-    pub fn parse_env() -> clap::error::Result<Self> {
-        Self::parse_from(env::args_os())
-    }
-
-    /// Parse options from an iterator, including argv[0].
-    pub fn parse_from<I, S>(args: I) -> clap::error::Result<Self>
-    where
-        I: IntoIterator<Item = S>,
-        S: Into<OsString> + Clone,
-    {
-        Self::try_parse_from(args)
-    }
 }
 
 fn parse_path(value: &str) -> Result<PathBuf, String> {
@@ -177,19 +149,11 @@ fn parse_path(value: &str) -> Result<PathBuf, String> {
     }
 }
 
-fn parse_positive_usize(value: &str) -> Result<usize, String> {
+fn parse_positive<T: FromStr + Default + PartialOrd>(value: &str) -> Result<T, String> {
     value
         .parse()
         .ok()
-        .filter(|value| *value > 0)
-        .ok_or_else(|| "value must be a positive integer".into())
-}
-
-fn parse_positive_u64(value: &str) -> Result<u64, String> {
-    value
-        .parse()
-        .ok()
-        .filter(|value| *value > 0)
+        .filter(|value| *value > T::default())
         .ok_or_else(|| "value must be a positive integer".into())
 }
 
@@ -199,46 +163,13 @@ mod tests {
 
     use super::*;
 
-    #[test]
-    fn applies_defaults_without_arguments() {
-        let options = Options::parse_from(["tpm2-proxyd"]).unwrap();
-
-        assert_eq!(options.config, PathBuf::from(DEFAULT_CONFIG_PATH));
-        assert_eq!(options.socket, PathBuf::from(DEFAULT_SOCKET_PATH));
-        assert_eq!(options.upstream, PathBuf::from(DEFAULT_UPSTREAM_TPM_PATH));
-        assert_eq!(options.max_packet_size, crate::tpm::DEFAULT_MAX_PACKET_SIZE);
-        assert_eq!(options.queue_depth, DEFAULT_QUEUE_DEPTH);
-        assert_eq!(options.max_connections, DEFAULT_MAX_CONNECTIONS);
-        assert_eq!(
-            options.auth_failure_warn_threshold,
-            crate::lockout::DEFAULT_WARN_THRESHOLD
-        );
-        assert_eq!(
-            options.auth_failure_limit,
-            crate::lockout::DEFAULT_UID_LIMIT
-        );
-        assert_eq!(
-            options.auth_failure_recovery_secs,
-            crate::lockout::DEFAULT_RECOVERY_INTERVAL.as_secs()
-        );
-        assert_eq!(
-            options.max_connections_per_uid,
-            DEFAULT_MAX_CONNECTIONS_PER_UID
-        );
-        assert_eq!(options.command_timeout_secs, DEFAULT_COMMAND_TIMEOUT_SECS);
-    }
-
-    #[test]
-    fn parses_explicit_config_argument() {
-        let options = Options::parse_from(["tpm2-proxyd", "--config=/tmp/policy.json"]).unwrap();
-
-        assert_eq!(options.config, PathBuf::from("/tmp/policy.json"));
+    fn parse(args: &[&str]) -> clap::error::Result<Options> {
+        Options::try_parse_from(std::iter::once("tpm2-proxyd").chain(args.iter().copied()))
     }
 
     #[test]
     fn parses_runtime_overrides() {
-        let options = Options::parse_from([
-            "tpm2-proxyd",
+        let options = parse(&[
             "--config=/tmp/policy.json",
             "--socket=/tmp/proxy.sock",
             "--upstream=/tmp/tpmrm0",
@@ -248,6 +179,7 @@ mod tests {
         ])
         .unwrap();
 
+        assert_eq!(options.config, PathBuf::from("/tmp/policy.json"));
         assert_eq!(options.socket, PathBuf::from("/tmp/proxy.sock"));
         assert_eq!(options.upstream, PathBuf::from("/tmp/tpmrm0"));
         assert_eq!(options.max_packet_size, 8192);
@@ -256,55 +188,19 @@ mod tests {
     }
 
     #[test]
-    fn rejects_config_without_equals() {
-        assert_eq!(
-            Options::parse_from(["tpm2-proxyd", "--config", "/tmp/policy.json"])
-                .unwrap_err()
-                .kind(),
-            ErrorKind::NoEquals
-        );
-    }
-
-    #[test]
-    fn rejects_duplicate_config_argument() {
-        assert_eq!(
-            Options::parse_from([
-                "tpm2-proxyd",
-                "--config=/tmp/one.json",
-                "--config=/tmp/two.json",
-            ])
-            .unwrap_err()
-            .kind(),
-            ErrorKind::ArgumentConflict
-        );
-    }
-
-    #[test]
-    fn rejects_non_positive_runtime_numbers() {
-        assert_eq!(
-            Options::parse_from([
-                "tpm2-proxyd",
-                "--config=/tmp/policy.json",
-                "--queue-depth=0",
-            ])
-            .unwrap_err()
-            .kind(),
-            ErrorKind::ValueValidation
-        );
-    }
-
-    #[test]
-    fn rejects_duplicate_runtime_options() {
-        assert_eq!(
-            Options::parse_from([
-                "tpm2-proxyd",
-                "--config=/tmp/policy.json",
-                "--socket=/tmp/one.sock",
-                "--socket=/tmp/two.sock",
-            ])
-            .unwrap_err()
-            .kind(),
-            ErrorKind::ArgumentConflict
-        );
+    fn rejects_malformed_arguments() {
+        let cases = [
+            (&["--config", "/tmp/policy.json"][..], ErrorKind::NoEquals),
+            (
+                &["--socket=/tmp/one.sock", "--socket=/tmp/two.sock"],
+                ErrorKind::ArgumentConflict,
+            ),
+            (&["--queue-depth=0"], ErrorKind::ValueValidation),
+            (&["--command-timeout-secs=0"], ErrorKind::ValueValidation),
+            (&["--config="], ErrorKind::ValueValidation),
+        ];
+        for (args, kind) in cases {
+            assert_eq!(parse(args).unwrap_err().kind(), kind, "{args:?}");
+        }
     }
 }

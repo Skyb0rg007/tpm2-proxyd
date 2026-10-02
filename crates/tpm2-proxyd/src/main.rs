@@ -55,6 +55,7 @@ use std::process::ExitCode;
 use std::time::Duration;
 
 use anyhow::Context;
+use clap::Parser;
 use tokio::signal::unix::{SignalKind, signal};
 use tokio::sync::watch;
 use tracing_subscriber::EnvFilter;
@@ -63,7 +64,7 @@ use tracing_subscriber::EnvFilter;
 async fn main() -> ExitCode {
     // Parse before installing the logger so clap handles --help/--version/usage
     // errors itself, with the right exit codes, rather than logging them.
-    let options = cli::Options::parse_env().unwrap_or_else(|error| error.exit());
+    let options = cli::Options::parse();
 
     init_tracing();
     match run(options).await {
@@ -171,37 +172,29 @@ fn raise_open_file_limit(max_connections: usize) {
 async fn start_scheduler(
     options: &cli::Options,
 ) -> anyhow::Result<(scheduler::CommandScheduler, String)> {
-    if let Some(server) = &options.swtpm_server {
-        let server = upstream::swtpm::SwtpmAddr::parse(server);
-        let control = options
-            .swtpm_ctrl
-            .as_deref()
-            .map(upstream::swtpm::SwtpmAddr::parse);
-        let label = format!("swtpm {server}");
-        let upstream = upstream::swtpm::SwtpmUpstream::open(
-            server,
-            control,
-            options.max_packet_size,
-            options.command_timeout(),
-        )
-        .await
-        .with_context(|| format!("connecting to {label}"))?;
-        Ok((
+    use upstream::swtpm::{SwtpmAddr, SwtpmUpstream};
+
+    let timeout = Duration::from_secs(options.command_timeout_secs);
+    let Some(server) = &options.swtpm_server else {
+        let label = options.upstream.display().to_string();
+        let upstream =
+            upstream::TpmDeviceUpstream::open(&options.upstream, options.max_packet_size, timeout)
+                .with_context(|| format!("opening upstream TPM device {label}"))?;
+        return Ok((
             scheduler::CommandScheduler::start(upstream, options.queue_depth),
             label,
-        ))
-    } else {
-        let upstream = upstream::TpmDeviceUpstream::open(
-            &options.upstream,
-            options.max_packet_size,
-            options.command_timeout(),
-        )
-        .with_context(|| format!("opening upstream TPM device {}", options.upstream.display()))?;
-        Ok((
-            scheduler::CommandScheduler::start(upstream, options.queue_depth),
-            options.upstream.display().to_string(),
-        ))
-    }
+        ));
+    };
+    let server = SwtpmAddr::parse(server);
+    let control = options.swtpm_ctrl.as_deref().map(SwtpmAddr::parse);
+    let label = format!("swtpm {server}");
+    let upstream = SwtpmUpstream::open(server, control, options.max_packet_size, timeout)
+        .await
+        .with_context(|| format!("connecting to {label}"))?;
+    Ok((
+        scheduler::CommandScheduler::start(upstream, options.queue_depth),
+        label,
+    ))
 }
 
 /// Install a `tracing` subscriber driven by `RUST_LOG` (default `info`).
