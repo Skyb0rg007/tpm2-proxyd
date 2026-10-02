@@ -1,17 +1,12 @@
 // SPDX-FileCopyrightText: 2026 Skye Soss <skye@soss.website>
 //
 // SPDX-License-Identifier: Apache-2.0
-//! Rust interfaces to systemd protocols.
-//!
-//! This module exposes systemd socket activation helpers
-//! and systemd notifications.
 
-#![allow(dead_code)]
+//! Rust interfaces to systemd protocols: socket activation, notifications, and
+//! the watchdog.
 
 // If this service ends up needing large caches, consider implementing
 // the Memory Pressure API (https://systemd.io/MEMORY_PRESSURE/).
-// This service doesn't need to reload configuration, but if it did consider
-// implementing sd_pid_notify_with_fds to use the FDSTORE.
 use rustix::fd::{FromRawFd, OwnedFd};
 use rustix::fs;
 use rustix::io;
@@ -23,7 +18,6 @@ use std::os::unix::ffi::OsStrExt;
 
 const SD_LISTEN_FDS_START: i32 = 3;
 
-const LISTEN_FDNAMES: &str = "LISTEN_FDNAMES";
 const LISTEN_FDS: &str = "LISTEN_FDS";
 const LISTEN_PIDFDID: &str = "LISTEN_PIDFDID";
 const LISTEN_PID: &str = "LISTEN_PID";
@@ -91,36 +85,6 @@ pub fn sd_listen_fds() -> io::Result<Vec<OwnedFd>> {
     Ok(owned_fds)
 }
 
-/// Same as sd_listen_fds, but also returns their names
-pub fn sd_listen_fds_with_names() -> io::Result<(Option<Vec<String>>, Vec<OwnedFd>)> {
-    let fds = sd_listen_fds()?;
-
-    let listen_fdnames = match env::var(LISTEN_FDNAMES) {
-        Ok(e) => e,
-        Err(env::VarError::NotPresent) => return Ok((None, fds)),
-        Err(env::VarError::NotUnicode(_)) => return Err(io::Errno::INVAL),
-    };
-
-    let names: Vec<String> = listen_fdnames.split(':').map(|s| s.into()).collect();
-
-    if names.len() != fds.len() {
-        return Err(io::Errno::INVAL);
-    }
-
-    Ok((Some(names), fds))
-}
-
-/// Unsets systemd socket activation environment variables
-/// This function is only safe to call in a single-threaded program
-pub unsafe fn sd_listen_unsetenv() {
-    unsafe {
-        env::remove_var(LISTEN_FDNAMES);
-        env::remove_var(LISTEN_FDS);
-        env::remove_var(LISTEN_PID);
-        env::remove_var(LISTEN_PIDFDID);
-    }
-}
-
 /// Determine if the service is running under a systemd watchdog
 /// If so, returns the number of microseconds allowed between notifications.
 pub fn sd_watchdog_enabled() -> io::Result<Option<NonZeroU64>> {
@@ -149,15 +113,6 @@ pub fn sd_watchdog_enabled() -> io::Result<Option<NonZeroU64>> {
     };
 
     Ok(Some(usec))
-}
-
-/// Unsets systemd watchdog environment variables
-/// This function is only safe to call in a single-threaded program
-pub unsafe fn sd_watchdog_unsetenv() {
-    unsafe {
-        env::remove_var(WATCHDOG_PID);
-        env::remove_var(WATCHDOG_USEC);
-    }
 }
 
 /// Perform a systemd notification
