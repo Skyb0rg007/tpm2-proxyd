@@ -27,3 +27,30 @@ jobs:
         run: nix develop --command treefmt --ci
       - name: REUSE lint
         run: nix develop --command reuse lint
+      - name: Smoke test (swtpm)
+        run: >-
+          nix shell --inputs-from . nixpkgs#tpm2-tools
+          --command nix develop
+          --command env MODE=swtpm dist/smoke-test.sh
+
+  nix:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      # The NixOS VM test needs /dev/kvm, which GitHub's runners have but
+      # don't make accessible to the runner user by default.
+      - name: Enable KVM
+        run: |
+          echo 'KERNEL=="kvm", GROUP="kvm", MODE="0666", OPTIONS+="static_node=kvm"' \
+            | sudo tee /etc/udev/rules.d/99-kvm4all.rules
+          sudo udevadm control --reload-rules
+          sudo udevadm trigger --name-match=kvm
+      - uses: cachix/install-nix-action@v31
+        with:
+          nix_path: nixpkgs=channel:nixos-unstable
+          extra_nix_config: |
+            system-features = nixos-test benchmark big-parallel kvm
+      - name: Package
+        run: nix build -L .#tpm2-proxyd
+      - name: Application tests (NixOS VM)
+        run: nix build -L .#checks.x86_64-linux.app-tests
