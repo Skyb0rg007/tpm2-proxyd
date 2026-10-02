@@ -43,26 +43,36 @@ before forwarding.
 A Nix dev shell provides the toolchain and dependencies:
 
 ```sh
-nix develop --command cargo build --release
+nix develop --command cargo build --release --workspace
 ```
 
 This produces `target/release/tpm2-proxyd` and
-`target/release/libtss2_tcti_proxy.so`.
+`target/release/libtss2_tcti_proxy.so`. The `--workspace` matters: a plain
+`cargo build` builds only the daemon, not the TCTI module.
 
-Build the Nix package itself with `nix build`, or run the daemon directly with
-`nix run -- --help`.
+Build the Nix package itself with `nix build` (the daemon, the TCTI module as
+`lib/libtss2-tcti-proxy.so`, the systemd units and the man page), or run the
+daemon directly with `nix run -- --help`.
 
 ## Installing
 
+Build as your own user, then install the result as root:
+
 ```sh
+cargo build --release --workspace
 sudo ./dist/install.sh
 ```
 
-The script installs the daemon, the TCTI module (renamed to the loader's
-expected `libtss2-tcti-proxy.so`), the systemd units, a system user, a man page,
-a policy at `/etc/tpm2-proxyd/policy.json` that gives every user the `standard`
-profile, and that profile at `/etc/tpm2-proxyd/profiles/standard.json`. It
-doesn't overwrite a policy or profile that's already there. Then:
+The script doesn't build anything (running cargo as root would leave a
+root-owned `target/`); it fails if the release build is missing. It installs the
+daemon, the TCTI module (renamed to the loader's expected
+`libtss2-tcti-proxy.so`, in tpm2-tss's library directory so the loader finds it
+by name), the systemd units, a system user, a man page (if `asciidoctor` is
+installed), a policy at `/etc/tpm2-proxyd/policy.json` that gives every user the
+`standard` profile, and that profile at
+`/etc/tpm2-proxyd/profiles/standard.json`. It doesn't overwrite a policy or
+profile that's already there. `PREFIX`, `LIBDIR`, `UNITDIR`, `MANDIR` and
+`DESTDIR` override where things go; see the script's header. Then:
 
 ```sh
 sudo systemctl enable --now tpm2-proxyd.socket
@@ -163,8 +173,9 @@ export TPM2TOOLS_TCTI=proxy:/run/tpm2-proxyd/tpm2-proxyd.sock
 The config string after `proxy:` is either a bare socket path or
 comma-separated settings: `path=<socket>` and `priority=<n>`, the scheduling
 priority to request (higher runs first). By default a client asks for the
-highest priority its policy allows; the policy's `priority_rules` cap whatever
-it asks for. For example, to run a background job below interactive clients:
+highest priority its policy allows; the matching rule's `max_priority` (or the
+policy's `default_max_priority`) caps whatever it asks for. For example, to run
+a background job below interactive clients:
 
 ```sh
 tpm2_getrandom --tcti=proxy:priority=0 8
@@ -187,8 +198,8 @@ tpm2-proxyd --config=policy.json --socket=/tmp/proxy.sock \
 `--swtpm-server` accepts `unix:<path>`, `tcp:<host:port>`, a path, or
 `host:port`. Pass `--swtpm-ctrl=<addr>` to have the proxy reset and start the
 swtpm itself (CMD_INIT + `TPM2_Startup`) on launch; otherwise start swtpm with
-`--flags startup-clear` so the TPM is already up. `dist/smoke-test.sh` exercises
-this whole path.
+`--flags startup-clear` so the TPM is already up. `MODE=swtpm dist/smoke-test.sh`
+exercises this whole path with tpm2-tools (see `docs/smoke-test.md`).
 
 [swtpm]: https://github.com/stefanberger/swtpm
 

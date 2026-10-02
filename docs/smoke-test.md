@@ -22,11 +22,16 @@ It requires:
 Build the daemon and TCTI:
 
 ```sh
-cargo build
+cargo build --workspace
 ```
 
+(`--workspace` is needed: a plain `cargo build` builds only the daemon, not the
+TCTI module.)
+
 Create a test policy that gives the current user a profile allowing only
-`TPM2_GetRandom`. Profiles live in a `profiles` directory beside the policy:
+`TPM2_GetRandom` and `TPM2_GetCapability`, which `tpm2_getrandom` sends first to
+check the TPM's maximum digest size (unless given `--force`). Profiles live in a
+`profiles` directory beside the policy:
 
 ```sh
 mkdir -p /tmp/tpm2-proxyd-smoke/profiles
@@ -38,7 +43,7 @@ cat > /tmp/tpm2-proxyd-smoke/policy.json <<EOF
 }
 EOF
 cat > /tmp/tpm2-proxyd-smoke/profiles/random.json <<EOF
-{ "commands": ["TPM_CC_GetRandom"] }
+{ "commands": ["TPM_CC_GetRandom", "TPM_CC_GetCapability"] }
 EOF
 ```
 
@@ -67,13 +72,14 @@ test "$(wc -c </tmp/tpm2-proxyd-random.bin)" -eq 8
 ```
 
 The command succeeds only if the TCTI can connect to the daemon socket, the
-daemon authorizes `TPM2_GetRandom` for the connecting UID/GID, the scheduler
-forwards the command to `/dev/tpmrm0`, and a TPM response is returned.
+daemon authorizes `TPM2_GetCapability` and `TPM2_GetRandom` for the connecting
+UID/GID, the scheduler forwards the commands to `/dev/tpmrm0`, and TPM
+responses are returned.
 
 To confirm policy denial, run a command the profile doesn't allow:
 
 ```sh
-tpm2_getcap --tcti=proxy:/tmp/tpm2-proxyd.sock properties-fixed
+tpm2_readclock --tcti=proxy:/tmp/tpm2-proxyd.sock
 ```
 
 It should fail with `rmt:error(2.0): command code not supported` without
