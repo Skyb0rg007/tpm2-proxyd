@@ -94,6 +94,16 @@ first-match rules that select a UID, a primary or supplementary GID, both, or
 every peer. A peer that matches no rule gets the default profile, or no access
 if there isn't one.
 
+Rules can safely grant more than the default, but not restrict a user below it.
+A user with subordinate ID ranges (`/etc/subuid`, `/etc/subgid`, which
+`useradd` sets up by default on many distributions) can connect from a user
+namespace, where `SO_PEERCRED` reports one of their subordinate UIDs and they
+may have shed supplementary groups. Such a peer matches neither a rule for
+their own UID nor one for a group they dropped, and gets the default. For the
+same reason each subordinate UID has its own connection cap and failure count.
+The default profile should therefore be the least any local user may have,
+with rules granting more to the UIDs or groups that need it.
+
 A profile is a JSON file in the profiles directory beside the policy file; none
 are built into the daemon, and the `standard` profile is installed with the
 service. A profile lists the commands it allows and the handles those commands

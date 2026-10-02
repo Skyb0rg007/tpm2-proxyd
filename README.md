@@ -103,8 +103,7 @@ Policy has two parts, both under `/etc/tpm2-proxyd/`:
   "default_profile": "standard",
   "default_max_priority": 0,
   "rules": [
-    { "subject": { "gid": 1001 }, "profile": "admin", "max_priority": 10 },
-    { "subject": { "uid": 1005 }, "profile": "none" }
+    { "subject": { "gid": 1001 }, "profile": "admin", "max_priority": 10 }
   ]
 }
 ```
@@ -114,7 +113,13 @@ names a `uid`, a `gid` (primary or supplementary), both, or, if empty, every
 peer. A peer no rule matches gets `default_profile`, or no access at all if it's
 unset. A rule without `max_priority` uses `default_max_priority` (default `0`).
 Loading fails if the policy names a profile that doesn't exist, so the example
-above also needs `admin.json` and `none.json`.
+above also needs `admin.json`.
+
+Use rules to grant more than the default, not to restrict a user below it. A
+user with subordinate IDs (`/etc/subuid`, set up by default on many
+distributions) can connect from a user namespace as one of those UIDs, or
+without some of their groups, and then gets the default whatever the rules
+say about them. Make `default_profile` the least any local user may have.
 
 A profile lists commands and handles by their TPM specification names:
 
@@ -142,8 +147,10 @@ transient objects, sessions and the null hierarchy, plus the owner and
 endorsement hierarchies for `CreatePrimary`, so it can't touch persistent keys,
 NV indices, PCR values or hierarchy settings, all of which every user shares.
 Each connection gets its own `/dev/tpmrm0` handle, so the kernel resource
-manager keeps one client's transient objects and sessions out of another's
-reach.
+manager keeps one client's transient objects out of another's reach and flushes
+what it leaves loaded. Session handles aren't virtualized, so the daemon only
+lets a connection flush sessions it holds, and `standard` doesn't let users save
+sessions, which the kernel would then never flush.
 
 A denied command isn't forwarded. The client gets an error response in the
 resource-manager layer, which tpm2-tools prints as, for example,
