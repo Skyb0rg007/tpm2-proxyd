@@ -31,14 +31,16 @@
 
 use std::io;
 
+use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt};
+
 use crate::scheduler::Priority;
 
 /// Magic that opens both the hello and its reply.
-pub const MAGIC: [u8; 4] = *b"TPXH";
+const MAGIC: [u8; 4] = *b"TPXH";
 /// Protocol version this server speaks.
-pub const VERSION: u16 = 1;
+const VERSION: u16 = 1;
 /// Size of the hello and of its reply.
-pub const SIZE: usize = 12;
+const SIZE: usize = 12;
 /// Flags this server understands. None are defined yet.
 const KNOWN_FLAGS: u16 = 0;
 
@@ -54,8 +56,10 @@ pub struct Hello {
 }
 
 impl Hello {
-    /// Parse a hello, failing if it doesn't start with [`MAGIC`].
-    pub fn parse(bytes: [u8; SIZE]) -> io::Result<Self> {
+    /// Read a hello from `stream`, failing if it doesn't start with [`MAGIC`].
+    pub async fn read(stream: &mut (impl AsyncRead + Unpin)) -> io::Result<Self> {
+        let mut bytes = [0; SIZE];
+        stream.read_exact(&mut bytes).await?;
         if bytes[..4] != MAGIC {
             return Err(io::Error::new(
                 io::ErrorKind::InvalidData,
@@ -94,13 +98,18 @@ pub enum HelloStatus {
 }
 
 impl HelloStatus {
-    /// Encode the reply carrying this status and the granted `priority`.
-    pub fn reply(self, priority: Priority) -> [u8; SIZE] {
+    /// Send the reply carrying this status and the granted `priority`.
+    pub async fn reply(
+        self,
+        stream: &mut (impl AsyncWrite + Unpin),
+        priority: Priority,
+    ) -> io::Result<()> {
         let mut bytes = [0; SIZE];
         bytes[..4].copy_from_slice(&MAGIC);
         bytes[4..6].copy_from_slice(&VERSION.to_be_bytes());
         bytes[6..8].copy_from_slice(&(self as u16).to_be_bytes());
         bytes[8..].copy_from_slice(&priority.0.to_be_bytes());
-        bytes
+        stream.write_all(&bytes).await?;
+        stream.flush().await
     }
 }

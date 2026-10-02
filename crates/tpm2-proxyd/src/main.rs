@@ -101,8 +101,8 @@ async fn run(options: cli::Options) -> anyhow::Result<()> {
     );
 
     raise_open_file_limit(options.max_connections);
-    let (listener, origin) = server::unix::RawTpmListener::from_systemd_or_bind(&options.socket)
-        .with_context(|| format!("binding raw TPM socket {}", options.socket.display()))?;
+    let (listener, origin) = server::socket::SocketListener::from_systemd_or_bind(&options.socket)
+        .with_context(|| format!("binding socket {}", options.socket.display()))?;
 
     let (shutdown_tx, shutdown_rx) = watch::channel(false);
     spawn_signal_handlers(shutdown_tx, broker.clone(), options.config.clone())?;
@@ -115,7 +115,7 @@ async fn run(options: cli::Options) -> anyhow::Result<()> {
         "tpm2-proxyd ready",
     );
 
-    let result = server::connection::serve_listener(
+    let result = server::serve(
         listener,
         broker,
         registry,
@@ -128,7 +128,7 @@ async fn run(options: cli::Options) -> anyhow::Result<()> {
     let _ = systemd::sd_notify("STOPPING=1");
     // Under socket activation systemd owns the path and keeps listening on it
     // across restarts, so only remove a socket the daemon bound itself.
-    if origin == server::unix::SocketOrigin::Bound {
+    if origin == server::socket::SocketOrigin::Bound {
         let _ = std::fs::remove_file(&options.socket);
     }
     tracing::info!("tpm2-proxyd stopped");

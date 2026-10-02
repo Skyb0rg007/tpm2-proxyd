@@ -2,19 +2,12 @@
 //
 // SPDX-License-Identifier: Apache-2.0
 
-//! Listener-independent downstream TPM command handling.
-//!
-//! [`serve_listener`] accepts [`ClientStream`] values from a [`Listener`],
-//! runs each connection's hello, then serves its TPM commands. Neither API
-//! assumes Unix sockets or TCP.
+//! One client connection: the hello, admission, then its TPM commands.
 
-#![allow(dead_code)] // Wired into main once daemon construction is implemented.
+use std::{io, time::Duration};
 
-use std::{future::Future, io, time::Duration};
-
-use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt};
+use tokio::io::{AsyncRead, AsyncWrite, AsyncWriteExt};
 use tokio::sync::watch;
-use tokio::task::JoinSet;
 use tpm2_protocol::data::TpmRcBase;
 
 use crate::{
@@ -23,279 +16,14 @@ use crate::{
     peer::Peer,
     scheduler::Priority,
     server::{
-        hello::{self, Hello, HelloStatus},
+        hello::{Hello, HelloStatus},
         registry::ConnectionRegistry,
     },
-    tpm::{self, Command, Response, resmgr_rc},
+    tpm::{self, Response, resmgr_rc},
 };
-
-/// How long shutdown waits for in-flight connections to drain before aborting.
-const SHUTDOWN_GRACE: Duration = Duration::from_secs(10);
-
-/// How long to pause accepting after running out of file descriptors or
-/// memory, so connections in flight can release some.
-const ACCEPT_BACKOFF: Duration = Duration::from_millis(100);
 
 /// How long a new connection has to send its hello.
 pub(crate) const HELLO_TIMEOUT: Duration = Duration::from_secs(10);
-
-/// A connected client capable of exchanging the hello and framed TPM packets.
-pub trait ClientStream: Send + 'static {
-    /// Read the client's hello.
-    fn read_hello(&mut self) -> impl Future<Output = io::Result<Hello>> + Send;
-
-    /// Answer the client's hello with a status and the granted priority.
-    fn write_hello_reply(
-        &mut self,
-        status: HelloStatus,
-        priority: Priority,
-    ) -> impl Future<Output = io::Result<()>> + Send;
-
-    /// Read the next command, or `None` for a clean EOF between commands.
-    fn read_command(
-        &mut self,
-        max_command_size: usize,
-    ) -> impl Future<Output = io::Result<Option<Command>>> + Send;
-
-    /// Write one complete TPM response.
-    fn write_response(
-        &mut self,
-        response: &Response,
-    ) -> impl Future<Output = io::Result<()>> + Send;
-}
-
-impl<T> ClientStream for T
-where
-    T: AsyncRead + AsyncWrite + Unpin + Send + 'static,
-{
-    async fn read_hello(&mut self) -> io::Result<Hello> {
-        let mut bytes = [0; hello::SIZE];
-        self.read_exact(&mut bytes).await?;
-        Hello::parse(bytes)
-    }
-
-    async fn write_hello_reply(
-        &mut self,
-        status: HelloStatus,
-        priority: Priority,
-    ) -> io::Result<()> {
-        self.write_all(&status.reply(priority)).await?;
-        self.flush().await
-    }
-
-    async fn read_command(&mut self, max_command_size: usize) -> io::Result<Option<Command>> {
-        tpm::read_command(self, max_command_size).await
-    }
-
-    async fn write_response(&mut self, response: &Response) -> io::Result<()> {
-        self.write_all(response.as_bytes()).await?;
-        self.flush().await
-    }
-}
-
-/// Stream accepted from a listener and the identity of its peer.
-pub struct Accepted<S> {
-    /// Connected client transport.
-    pub stream: S,
-    /// Authenticated identity used for policy decisions.
-    pub peer: Peer,
-}
-
-/// Abstract source of admitted client connections.
-pub trait Listener {
-    /// Transport produced by this listener.
-    type Stream: ClientStream;
-
-    /// Accept and admit one client.
-    ///
-    /// Errors are the listener's own, as `accept` reports them. A listener that
-    /// can't admit one particular client (for example, because it can't read
-    /// the client's credentials) drops that client and keeps accepting.
-    fn accept(&mut self) -> impl Future<Output = io::Result<Accepted<Self::Stream>>> + Send;
-}
-
-/// Low-level listener that yields a Tokio byte stream.
-pub trait TokioListener {
-    /// Connected Tokio stream type.
-    type Stream: AsyncRead + AsyncWrite + Unpin + Send + 'static;
-
-    /// Accept one raw stream.
-    fn accept_stream(&mut self) -> impl Future<Output = io::Result<Self::Stream>> + Send;
-}
-
-impl TokioListener for tokio::net::UnixListener {
-    type Stream = tokio::net::UnixStream;
-
-    async fn accept_stream(&mut self) -> io::Result<Self::Stream> {
-        self.accept().await.map(|(stream, _)| stream)
-    }
-}
-
-impl TokioListener for tokio::net::TcpListener {
-    type Stream = tokio::net::TcpStream;
-
-    async fn accept_stream(&mut self) -> io::Result<Self::Stream> {
-        self.accept().await.map(|(stream, _)| stream)
-    }
-}
-
-/// Test adapter for listeners whose clients share one static identity.
-///
-/// Transports that authenticate each peer implement [`Listener`] directly.
-pub struct RawListener<L> {
-    inner: L,
-    peer: Peer,
-}
-
-impl<L> RawListener<L> {
-    /// Wrap `inner`, assigning the supplied admission context to every client.
-    ///
-    /// This is intended for trusted/local raw listeners. Transports that
-    /// authenticate each peer should implement [`Listener`] directly.
-    pub fn new(inner: L, peer: Peer) -> Self {
-        Self { inner, peer }
-    }
-
-    /// Recover the wrapped listener.
-    pub fn into_inner(self) -> L {
-        self.inner
-    }
-}
-
-impl<L> Listener for RawListener<L>
-where
-    L: TokioListener + Send,
-{
-    type Stream = L::Stream;
-
-    async fn accept(&mut self) -> io::Result<Accepted<Self::Stream>> {
-        Ok(Accepted {
-            stream: self.inner.accept_stream().await?,
-            peer: self.peer.clone(),
-        })
-    }
-}
-
-/// Accept clients until shutdown and run each connection in its own task.
-///
-/// Client tasks only exchange the hello, parse, authorize, enqueue, and return
-/// responses. The scheduler worker behind [`Broker`] remains the sole owner of
-/// the upstream TCTI.
-///
-/// A failed `accept` stops the server only when the listening socket itself is
-/// unusable; open connections are drained before the error is returned. Any
-/// other failure is logged and accepting continues.
-pub async fn serve_listener<L>(
-    mut listener: L,
-    broker: Broker,
-    registry: ConnectionRegistry,
-    max_command_size: usize,
-    mut shutdown: watch::Receiver<bool>,
-) -> io::Result<()>
-where
-    L: Listener,
-{
-    let mut tasks: JoinSet<()> = JoinSet::new();
-    let mut result = Ok(());
-    // Connections stop on the caller's shutdown or when the listener fails.
-    let (stop, stopped) = watch::channel(false);
-
-    loop {
-        tokio::select! {
-            changed = shutdown.changed() => {
-                // The sender was dropped or signalled shutdown: stop accepting.
-                if changed.is_err() || *shutdown.borrow() {
-                    break;
-                }
-            }
-            // Reap finished connections, or the set grows with every one.
-            Some(joined) = tasks.join_next(), if !tasks.is_empty() => {
-                if let Err(error) = joined {
-                    tracing::error!(%error, "connection task failed");
-                }
-            }
-            accepted = listener.accept() => {
-                let accepted = match accepted {
-                    Ok(accepted) => accepted,
-                    Err(error) => match AcceptFailure::of(&error) {
-                        AcceptFailure::Fatal => {
-                            result = Err(error);
-                            break;
-                        }
-                        AcceptFailure::Exhausted => {
-                            tracing::warn!(%error, "failed to accept a connection; pausing");
-                            tokio::time::sleep(ACCEPT_BACKOFF).await;
-                            continue;
-                        }
-                        AcceptFailure::Connection => {
-                            tracing::debug!(%error, "failed to accept a connection");
-                            continue;
-                        }
-                    },
-                };
-                let broker = broker.clone();
-                let registry = registry.clone();
-                let connection_shutdown = stopped.clone();
-                tasks.spawn(async move {
-                    if let Err(error) = serve_client(
-                        accepted,
-                        &broker,
-                        &registry,
-                        max_command_size,
-                        connection_shutdown,
-                    )
-                    .await
-                    {
-                        tracing::debug!(%error, "downstream TPM connection closed with an error");
-                    }
-                });
-            }
-        }
-    }
-
-    let _ = stop.send(true);
-    drain(tasks).await;
-    result
-}
-
-/// How [`serve_listener`] treats a failed `accept`.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-enum AcceptFailure {
-    /// The listening socket itself is unusable: stop serving.
-    Fatal,
-    /// Out of file descriptors or memory: pause, then keep accepting.
-    Exhausted,
-    /// A problem with the one connection being accepted: keep accepting.
-    Connection,
-}
-
-impl AcceptFailure {
-    fn of(error: &io::Error) -> Self {
-        match error.raw_os_error() {
-            Some(libc::EBADF | libc::EINVAL | libc::ENOTSOCK | libc::EFAULT) => Self::Fatal,
-            Some(libc::EMFILE | libc::ENFILE | libc::ENOBUFS | libc::ENOMEM) => Self::Exhausted,
-            _ => Self::Connection,
-        }
-    }
-}
-
-/// Wait for active connection tasks to finish, aborting any that outlast the
-/// shutdown grace period. The tasks have been told to stop, so they stop after
-/// their current in-flight command.
-async fn drain(mut tasks: JoinSet<()>) {
-    if tasks.is_empty() {
-        return;
-    }
-    tracing::info!(active = tasks.len(), "draining active connections");
-    let drained = tokio::time::timeout(SHUTDOWN_GRACE, async {
-        while tasks.join_next().await.is_some() {}
-    })
-    .await;
-    if drained.is_err() {
-        tracing::warn!("shutdown grace period elapsed; aborting remaining connections");
-        tasks.shutdown().await;
-    }
-}
 
 /// Run one accepted connection: the hello, admission, then its commands.
 ///
@@ -304,18 +32,14 @@ async fn drain(mut tasks: JoinSet<()>) {
 /// slots rather than file descriptors without limit. One over a cap is
 /// answered `Busy` straight away, without waiting for its hello. Otherwise the
 /// client has [`HELLO_TIMEOUT`] to send its hello.
-async fn serve_client<S>(
-    accepted: Accepted<S>,
+pub async fn serve_client(
+    mut stream: impl AsyncRead + AsyncWrite + Unpin,
+    peer: Peer,
     broker: &Broker,
     registry: &ConnectionRegistry,
     max_command_size: usize,
     mut shutdown: watch::Receiver<bool>,
-) -> Result<(), ConnectionError>
-where
-    S: ClientStream,
-{
-    let Accepted { mut stream, peer } = accepted;
-
+) -> Result<(), ConnectionError> {
     let _guard = match registry.register(peer.uid) {
         Ok(guard) => guard,
         Err(full) => {
@@ -327,73 +51,62 @@ where
                 pid = peer.pid,
                 ?full,
             );
-            stream
-                .write_hello_reply(HelloStatus::Busy, Priority(0))
-                .await?;
+            HelloStatus::Busy.reply(&mut stream, Priority(0)).await?;
             return Err(ConnectionError::Refused(HelloStatus::Busy));
         }
     };
     let hello = tokio::select! {
         _ = shutdown.changed() => return Ok(()),
-        hello = tokio::time::timeout(HELLO_TIMEOUT, stream.read_hello()) => {
+        hello = tokio::time::timeout(HELLO_TIMEOUT, Hello::read(&mut stream)) => {
             hello.map_err(|_| io::Error::new(io::ErrorKind::TimedOut, "no hello received"))??
         }
     };
     if let Err(status) = hello.check() {
-        stream.write_hello_reply(status, Priority(0)).await?;
+        status.reply(&mut stream, Priority(0)).await?;
         return Err(ConnectionError::Refused(status));
     }
     let client = broker.admit(peer, hello.priority);
-    stream
-        .write_hello_reply(HelloStatus::Accepted, client.priority())
+    HelloStatus::Accepted
+        .reply(&mut stream, client.priority())
         .await?;
 
-    serve_connection(stream, client, max_command_size, shutdown).await
+    serve_commands(stream, client, max_command_size, shutdown).await
 }
 
 /// Serve commands from one admitted client until EOF, shutdown, or failure.
 ///
 /// A shutdown signal stops the connection at the next command boundary; a
 /// command already in flight is allowed to finish (the TPM is non-preemptible).
-pub async fn serve_connection<S>(
-    mut stream: S,
+async fn serve_commands(
+    mut stream: impl AsyncRead + AsyncWrite + Unpin,
     client: Client,
     max_command_size: usize,
     mut shutdown: watch::Receiver<bool>,
-) -> Result<(), ConnectionError>
-where
-    S: ClientStream,
-{
+) -> Result<(), ConnectionError> {
     loop {
-        tokio::select! {
+        let command = tokio::select! {
             changed = shutdown.changed() => {
                 if changed.is_err() || *shutdown.borrow() {
-                    break;
+                    return Ok(());
                 }
+                continue;
             }
-            command = stream.read_command(max_command_size) => {
-                match command? {
-                    None => break,
-                    Some(command) => {
-                        let response = match client.execute(command).await {
-                            Ok(response) => response,
-                            // The client gets an error response and may carry
-                            // on; the broker has logged the denial.
-                            Err(BrokerError::Denied { denial, .. }) => {
-                                Response::error(denial.response_code())
-                            }
-                            Err(BrokerError::LockedOut { .. }) => {
-                                Response::error(resmgr_rc(TpmRcBase::Lockout))
-                            }
-                            Err(error) => return Err(error.into()),
-                        };
-                        stream.write_response(&response).await?;
-                    }
-                }
-            }
-        }
+            command = tpm::read_command(&mut stream, max_command_size) => command?,
+        };
+        let Some(command) = command else {
+            return Ok(());
+        };
+        let response = match client.execute(command).await {
+            Ok(response) => response,
+            // The client gets an error response and may carry on; the broker
+            // has logged the denial.
+            Err(BrokerError::Denied { denial, .. }) => Response::error(denial.response_code()),
+            Err(BrokerError::LockedOut { .. }) => Response::error(resmgr_rc(TpmRcBase::Lockout)),
+            Err(error) => return Err(error.into()),
+        };
+        stream.write_all(response.as_bytes()).await?;
+        stream.flush().await?;
     }
-    Ok(())
 }
 
 /// Failure while serving a downstream connection.
@@ -412,10 +125,6 @@ pub enum ConnectionError {
 
 #[cfg(test)]
 mod tests {
-    use std::collections::VecDeque;
-
-    use tokio::io::{AsyncReadExt, AsyncWriteExt, DuplexStream};
-
     use crate::{
         policy::Policy,
         testing::{FakeUpstream, broker, command_bytes, error_response},
@@ -432,7 +141,7 @@ mod tests {
         let client = broker.admit(Peer::new(1000, 100), Priority(4));
         let (mut stream, server) = tokio::io::duplex(256);
         let (_shutdown, shutdown_rx) = watch::channel(false);
-        let server = tokio::spawn(serve_connection(
+        let server = tokio::spawn(serve_commands(
             server,
             client,
             DEFAULT_MAX_PACKET_SIZE,
@@ -449,82 +158,5 @@ mod tests {
 
         server.await.unwrap().unwrap();
         assert!(forwarded.lock().unwrap().is_empty());
-    }
-
-    /// Listener that replays scripted `accept` results, then waits forever.
-    struct ScriptedListener(VecDeque<io::Result<Accepted<DuplexStream>>>);
-
-    impl Listener for ScriptedListener {
-        type Stream = DuplexStream;
-
-        async fn accept(&mut self) -> io::Result<Accepted<Self::Stream>> {
-            match self.0.pop_front() {
-                Some(result) => result,
-                None => std::future::pending().await,
-            }
-        }
-    }
-
-    fn accepted(stream: DuplexStream) -> io::Result<Accepted<DuplexStream>> {
-        Ok(Accepted {
-            stream,
-            peer: Peer::new(1000, 100),
-        })
-    }
-
-    fn start_serving(
-        script: impl Into<VecDeque<io::Result<Accepted<DuplexStream>>>>,
-    ) -> (watch::Sender<bool>, tokio::task::JoinHandle<io::Result<()>>) {
-        let (shutdown, shutdown_rx) = watch::channel(false);
-        let server = tokio::spawn(serve_listener(
-            ScriptedListener(script.into()),
-            broker(Policy::allow_all(), FakeUpstream::echo(), 0),
-            ConnectionRegistry::new(0, 0),
-            DEFAULT_MAX_PACKET_SIZE,
-            shutdown_rx,
-        ));
-        (shutdown, server)
-    }
-
-    #[tokio::test(start_paused = true)]
-    async fn keeps_accepting_after_connection_and_resource_errors() {
-        let (mut client, server_end) = tokio::io::duplex(256);
-        let (shutdown, server) = start_serving([
-            Err(io::Error::from_raw_os_error(libc::ECONNABORTED)),
-            Err(io::Error::from_raw_os_error(libc::EMFILE)),
-            accepted(server_end),
-        ]);
-
-        // The client accepted after both errors is served.
-        client.write_all(b"TPXH\0\x01\0\0\0\0\0\x04").await.unwrap();
-        let mut reply = [0u8; 12];
-        client.read_exact(&mut reply).await.unwrap();
-        assert_eq!(&reply, b"TPXH\0\x01\0\0\0\0\0\x04");
-
-        shutdown.send(true).unwrap();
-        server.await.unwrap().unwrap();
-    }
-
-    #[tokio::test]
-    async fn stops_promptly_when_the_listening_socket_fails() {
-        let (mut client, server_end) = tokio::io::duplex(256);
-        let (_shutdown, server) = start_serving([
-            accepted(server_end),
-            Err(io::Error::from_raw_os_error(libc::EBADF)),
-        ]);
-
-        // The server returns the listener's error once its open connection has
-        // been told to stop, well before the drain grace period would expire.
-        let error = tokio::time::timeout(SHUTDOWN_GRACE / 2, server)
-            .await
-            .expect("server did not stop promptly")
-            .unwrap()
-            .unwrap_err();
-        assert_eq!(error.raw_os_error(), Some(libc::EBADF));
-
-        // The open connection was closed rather than left running.
-        let mut rest = Vec::new();
-        client.read_to_end(&mut rest).await.unwrap();
-        assert!(rest.is_empty());
     }
 }

@@ -20,9 +20,10 @@ use tokio::net::UnixStream;
 use tokio::sync::watch;
 
 use crate::policy::Policy;
-use crate::server::connection::{HELLO_TIMEOUT, serve_listener};
+use crate::server::connection::HELLO_TIMEOUT;
 use crate::server::registry::ConnectionRegistry;
-use crate::server::unix::RawTpmListener;
+use crate::server::serve;
+use crate::server::socket::SocketListener;
 use crate::testing::{FakeUpstream, broker, command_bytes, echo_response, error_response};
 use crate::tpm::{DEFAULT_MAX_PACKET_SIZE, read_frame};
 
@@ -125,9 +126,9 @@ impl Harness {
             std::process::id(),
             NEXT.fetch_add(1, Ordering::Relaxed),
         ));
-        let listener = RawTpmListener::bind_prepared(&socket).unwrap();
+        let listener = SocketListener::bind(&socket).unwrap();
         let (shutdown, shutdown_rx) = watch::channel(false);
-        let server = tokio::spawn(serve_listener(
+        let server = tokio::spawn(serve(
             listener,
             broker(policy(), FakeUpstream::new(fake_tpm), 0),
             ConnectionRegistry::new(max_connections, 0),
