@@ -18,14 +18,9 @@
 //! or loaded; anything else would let one user destroy another's session
 //! mid-workflow.
 
-#![allow(dead_code)] // Main/config wiring is implemented in a later change.
-
 use std::{
     collections::HashSet,
-    sync::{
-        Arc, Mutex, RwLock,
-        atomic::{AtomicU64, Ordering},
-    },
+    sync::{Arc, Mutex, RwLock},
 };
 
 use crate::{
@@ -43,7 +38,6 @@ use tpm2_protocol::data::TpmCc;
 #[derive(Clone)]
 pub struct Broker {
     policy: Arc<RwLock<Policy>>,
-    generation: Arc<AtomicU64>,
     scheduler: CommandScheduler,
     auth_failures: Arc<AuthFailures>,
 }
@@ -54,7 +48,6 @@ impl Broker {
     pub fn new(policy: Policy, scheduler: CommandScheduler, auth_failures: AuthFailures) -> Self {
         Self {
             policy: Arc::new(RwLock::new(policy)),
-            generation: Arc::new(AtomicU64::new(1)),
             scheduler,
             auth_failures: Arc::new(auth_failures),
         }
@@ -62,16 +55,10 @@ impl Broker {
 
     /// Atomically replace the active policy for future decisions.
     ///
-    /// Returns the new policy generation. Connections already admitted keep
-    /// their previously capped priority; subsequent commands use the new policy.
-    pub fn replace_policy(&self, policy: Policy) -> u64 {
+    /// Connections already admitted keep their previously capped priority;
+    /// subsequent commands use the new policy.
+    pub fn replace_policy(&self, policy: Policy) {
         *self.policy.write().unwrap() = policy;
-        self.generation.fetch_add(1, Ordering::Relaxed) + 1
-    }
-
-    /// Current policy generation, bumped on every [`Self::replace_policy`].
-    pub fn policy_generation(&self) -> u64 {
-        self.generation.load(Ordering::Relaxed)
     }
 
     /// Admit a peer: cap its requested priority for the connection lifetime and

@@ -55,7 +55,7 @@ mod tpm;
 /// Upstream client that talks to the physical TPM's resource manager.
 mod upstream;
 
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 use std::process::ExitCode;
 use std::time::Duration;
 
@@ -232,21 +232,17 @@ fn spawn_signal_handlers(
     tokio::spawn(async move {
         while sighup.recv().await.is_some() {
             tracing::info!("received SIGHUP; reloading policy");
-            match reload_policy(&broker, &config_path) {
-                Ok(generation) => tracing::info!(generation, "policy reloaded"),
-                Err(error) => tracing::error!(error = format!("{error:#}"), "policy reload failed"),
+            match policy::Policy::load(&config_path) {
+                Ok(policy) => {
+                    broker.replace_policy(policy);
+                    tracing::info!("policy reloaded");
+                }
+                Err(error) => tracing::error!(%error, "policy reload failed"),
             }
         }
     });
 
     Ok(())
-}
-
-/// Re-read the policy file and atomically swap it in, returning the new
-/// policy generation.
-fn reload_policy(broker: &broker::Broker, config_path: &Path) -> anyhow::Result<u64> {
-    let policy = policy::Policy::load(config_path)?;
-    Ok(broker.replace_policy(policy))
 }
 
 /// Spawn the systemd watchdog keep-alive task, if a watchdog is configured.
