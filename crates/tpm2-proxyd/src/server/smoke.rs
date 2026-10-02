@@ -12,25 +12,22 @@
 
 #![cfg(test)]
 
+use std::sync::atomic::{AtomicU32, Ordering};
 use std::time::Duration;
 
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::UnixStream;
 use tokio::sync::watch;
 
-use crate::broker::Broker;
-use crate::lockout::AuthFailures;
 use crate::policy::Policy;
-use crate::scheduler::CommandScheduler;
 use crate::server::connection::{HELLO_TIMEOUT, serve_listener};
 use crate::server::registry::ConnectionRegistry;
 use crate::server::unix::RawTpmListener;
-use crate::tpm::{Command, DEFAULT_MAX_PACKET_SIZE, HEADER_SIZE, Response};
-use crate::upstream::{SessionId, Upstream, UpstreamError};
+use crate::testing::{FakeUpstream, broker, command_bytes, echo_response, error_response};
+use crate::tpm::{DEFAULT_MAX_PACKET_SIZE, HEADER_SIZE};
 
 const GET_RANDOM: u32 = 0x17b;
 const GET_TEST_RESULT: u32 = 0x17c;
-const GET_CAPABILITY: u32 = 0x17a;
 const TPM_RC_FAILURE: u32 = 0x101;
 
 /// Priority cap the test policy gives every peer.
@@ -61,43 +58,12 @@ const BUSY: u16 = 2;
 
 /// Fake TPM: `GetTestResult` fails with a TPM error code, everything else
 /// succeeds with a response echoing the command code into its body.
-struct FakeTpm;
-
-impl Upstream for FakeTpm {
-    async fn transact(
-        &mut self,
-        _session: SessionId,
-        command: &Command,
-    ) -> Result<Response, UpstreamError> {
-        let bytes = if command.code().value() == GET_TEST_RESULT {
-            error_response(TPM_RC_FAILURE)
-        } else {
-            success_response(command.code().value())
-        };
-        Ok(Response::parse(bytes, DEFAULT_MAX_PACKET_SIZE).unwrap())
+fn fake_tpm(code: u32) -> Vec<u8> {
+    if code == GET_TEST_RESULT {
+        error_response(TPM_RC_FAILURE)
+    } else {
+        echo_response(code)
     }
-}
-
-fn command(code: u32) -> Vec<u8> {
-    let mut bytes = Vec::from(0x8001u16.to_be_bytes());
-    bytes.extend_from_slice(&10u32.to_be_bytes());
-    bytes.extend_from_slice(&code.to_be_bytes());
-    bytes
-}
-
-fn success_response(code: u32) -> Vec<u8> {
-    let mut bytes = Vec::from(0x8001u16.to_be_bytes());
-    bytes.extend_from_slice(&14u32.to_be_bytes());
-    bytes.extend_from_slice(&0u32.to_be_bytes());
-    bytes.extend_from_slice(&code.to_be_bytes());
-    bytes
-}
-
-fn error_response(rc: u32) -> Vec<u8> {
-    let mut bytes = Vec::from(0x8001u16.to_be_bytes());
-    bytes.extend_from_slice(&10u32.to_be_bytes());
-    bytes.extend_from_slice(&rc.to_be_bytes());
-    bytes
 }
 
 async fn read_hello_reply(stream: &mut UnixStream) -> [u8; 12] {
@@ -124,16 +90,16 @@ async fn assert_closed(stream: &mut UnixStream) {
     );
 }
 
-async fn read_packet(stream: &mut UnixStream) -> Option<Vec<u8>> {
+/// Send `code` and return the response.
+async fn transact(stream: &mut UnixStream, code: u32) -> Vec<u8> {
+    stream.write_all(&command_bytes(code, &[])).await.unwrap();
     let mut header = [0u8; HEADER_SIZE];
-    if stream.read_exact(&mut header).await.is_err() {
-        return None;
-    }
+    stream.read_exact(&mut header).await.unwrap();
     let size = u32::from_be_bytes(header[2..6].try_into().unwrap()) as usize;
     let mut packet = vec![0u8; size];
     packet[..HEADER_SIZE].copy_from_slice(&header);
     stream.read_exact(&mut packet[HEADER_SIZE..]).await.unwrap();
-    Some(packet)
+    packet
 }
 
 /// Policy allowing only `GetRandom` and `GetTestResult` for any peer, at
@@ -156,24 +122,18 @@ struct Harness {
 
 impl Harness {
     fn start(max_connections: usize) -> Self {
+        static NEXT: AtomicU32 = AtomicU32::new(0);
         let socket = std::env::temp_dir().join(format!(
             "tpm2-proxyd-smoke-{}-{}.sock",
             std::process::id(),
-            fastrand_suffix(),
+            NEXT.fetch_add(1, Ordering::Relaxed),
         ));
-        let scheduler = CommandScheduler::start(FakeTpm, 8);
-        let broker = Broker::new(
-            policy(),
-            scheduler,
-            AuthFailures::new(0, 0, std::time::Duration::ZERO),
-        );
-        let registry = ConnectionRegistry::new(max_connections, 0);
         let listener = RawTpmListener::bind_prepared(&socket).unwrap();
         let (shutdown, shutdown_rx) = watch::channel(false);
         let server = tokio::spawn(serve_listener(
             listener,
-            broker,
-            registry,
+            broker(policy(), FakeUpstream::new(fake_tpm), 0),
+            ConnectionRegistry::new(max_connections, 0),
             DEFAULT_MAX_PACKET_SIZE,
             shutdown_rx,
         ));
@@ -207,59 +167,25 @@ impl Harness {
     }
 }
 
-// Avoid an extra dependency for a unique-enough socket suffix.
-fn fastrand_suffix() -> u128 {
-    use std::time::{SystemTime, UNIX_EPOCH};
-    SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .unwrap()
-        .as_nanos()
-}
-
 #[tokio::test]
 async fn forwards_allowed_commands_and_relays_tpm_errors() {
     let harness = Harness::start(0);
     let mut client = harness.connect().await;
 
     // Permitted command: success response routed back verbatim.
-    client.write_all(&command(GET_RANDOM)).await.unwrap();
     assert_eq!(
-        read_packet(&mut client).await.unwrap(),
-        success_response(GET_RANDOM)
+        transact(&mut client, GET_RANDOM).await,
+        echo_response(GET_RANDOM)
     );
 
     // Permitted command whose TPM returns an error: the error response is
     // relayed byte-for-byte rather than dropped.
-    client.write_all(&command(GET_TEST_RESULT)).await.unwrap();
     assert_eq!(
-        read_packet(&mut client).await.unwrap(),
+        transact(&mut client, GET_TEST_RESULT).await,
         error_response(TPM_RC_FAILURE)
     );
 
     drop(client);
-    harness.shutdown().await;
-}
-
-#[tokio::test]
-async fn denied_command_gets_an_error_response() {
-    let harness = Harness::start(0);
-    let mut client = harness.connect().await;
-
-    // The policy denies the command: the client gets TPM_RC_COMMAND_CODE in
-    // the resource-manager layer, and the connection stays usable.
-    client.write_all(&command(GET_CAPABILITY)).await.unwrap();
-    assert_eq!(
-        read_packet(&mut client).await.unwrap(),
-        error_response(0x000b_0143)
-    );
-    client.write_all(&command(GET_RANDOM)).await.unwrap();
-    assert_eq!(
-        read_packet(&mut client).await.unwrap(),
-        success_response(GET_RANDOM)
-    );
-
-    drop(client);
-
     harness.shutdown().await;
 }
 
@@ -291,10 +217,9 @@ async fn enforces_the_connection_cap() {
     assert_closed(&mut second).await;
 
     // The first connection still works.
-    first.write_all(&command(GET_RANDOM)).await.unwrap();
     assert_eq!(
-        read_packet(&mut first).await.unwrap(),
-        success_response(GET_RANDOM)
+        transact(&mut first, GET_RANDOM).await,
+        echo_response(GET_RANDOM)
     );
 
     drop(first);
@@ -367,7 +292,7 @@ async fn closes_connections_that_skip_the_hello() {
     // A TPM command isn't a hello: no reply, no response, just a close. Pad it
     // to the hello's 12 bytes so the server sees the wrong magic rather than
     // waiting for more, and closes well before the hello timeout.
-    let mut bytes = command(GET_RANDOM);
+    let mut bytes = command_bytes(GET_RANDOM, &[]);
     bytes.resize(12, 0);
     client.write_all(&bytes).await.unwrap();
     tokio::time::timeout(HELLO_TIMEOUT / 2, assert_closed(&mut client))

@@ -412,54 +412,19 @@ pub enum ConnectionError {
 
 #[cfg(test)]
 mod tests {
-    use std::sync::{Arc, Mutex};
+    use std::collections::VecDeque;
 
-    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+    use tokio::io::{AsyncReadExt, AsyncWriteExt, DuplexStream};
 
     use crate::{
-        broker::Broker,
-        lockout::AuthFailures,
         policy::Policy,
-        scheduler::CommandScheduler,
+        testing::{FakeUpstream, broker, command_bytes, error_response},
         tpm::{DEFAULT_MAX_PACKET_SIZE, HEADER_SIZE},
-        upstream::{SessionId, Upstream, UpstreamError},
     };
 
     use super::*;
 
-    struct EchoUpstream {
-        commands: Arc<Mutex<Vec<u32>>>,
-    }
-
-    impl Upstream for EchoUpstream {
-        async fn transact(
-            &mut self,
-            _session: SessionId,
-            command: &Command,
-        ) -> Result<Response, UpstreamError> {
-            self.commands.lock().unwrap().push(command.code().value());
-            Ok(Response::parse(response(command.code().value()), DEFAULT_MAX_PACKET_SIZE).unwrap())
-        }
-    }
-
-    fn command(code: u32) -> Vec<u8> {
-        let mut command = Vec::from(0x8001u16.to_be_bytes());
-        command.extend_from_slice(&10u32.to_be_bytes());
-        command.extend_from_slice(&code.to_be_bytes());
-        command
-    }
-
-    // A valid success response carrying the command code in its body, so the
-    // routed-back response is identifiable.
-    fn response(code: u32) -> Vec<u8> {
-        let mut response = Vec::from(0x8001u16.to_be_bytes());
-        response.extend_from_slice(&14u32.to_be_bytes());
-        response.extend_from_slice(&0u32.to_be_bytes());
-        response.extend_from_slice(&code.to_be_bytes());
-        response
-    }
-
-    async fn read_packet(stream: &mut tokio::io::DuplexStream) -> Vec<u8> {
+    async fn read_packet(stream: &mut DuplexStream) -> Vec<u8> {
         let mut header = [0; HEADER_SIZE];
         stream.read_exact(&mut header).await.unwrap();
         let size = u32::from_be_bytes(header[2..6].try_into().unwrap()) as usize;
@@ -470,86 +435,36 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn generic_stream_forwards_multiple_commands() {
-        let commands = Arc::new(Mutex::new(Vec::new()));
-        let scheduler = CommandScheduler::start(
-            EchoUpstream {
-                commands: commands.clone(),
-            },
-            8,
-        );
-        let broker = Broker::new(
-            Policy::allow_all(),
-            scheduler,
-            AuthFailures::new(0, 0, std::time::Duration::ZERO),
-        );
-        let client_context = broker.admit(Peer::new(1000, 100), Priority(4));
-        let (mut client, server) = tokio::io::duplex(256);
-        let (_shutdown_tx, shutdown_rx) = watch::channel(false);
-
-        let server_task = tokio::spawn(serve_connection(
-            server,
-            client_context,
-            DEFAULT_MAX_PACKET_SIZE,
-            shutdown_rx,
-        ));
-
-        client.write_all(&command(0x17b)).await.unwrap();
-        assert_eq!(read_packet(&mut client).await, response(0x17b));
-        client.write_all(&command(0x17a)).await.unwrap();
-        assert_eq!(read_packet(&mut client).await, response(0x17a));
-        client.shutdown().await.unwrap();
-
-        server_task.await.unwrap().unwrap();
-        assert_eq!(*commands.lock().unwrap(), [0x17b, 0x17a]);
-    }
-
-    #[tokio::test]
     async fn denied_command_gets_an_error_response_and_is_not_forwarded() {
-        let commands = Arc::new(Mutex::new(Vec::new()));
-        let scheduler = CommandScheduler::start(
-            EchoUpstream {
-                commands: commands.clone(),
-            },
-            8,
-        );
-        let broker = Broker::new(
-            Policy::from_json("{}", &[]),
-            scheduler,
-            AuthFailures::new(0, 0, std::time::Duration::ZERO),
-        );
-        let client_context = broker.admit(Peer::new(1000, 100), Priority(4));
-        let (mut client, server) = tokio::io::duplex(256);
-        let (_shutdown_tx, shutdown_rx) = watch::channel(false);
-
-        let server_task = tokio::spawn(serve_connection(
+        let upstream = FakeUpstream::echo();
+        let forwarded = upstream.commands.clone();
+        let broker = broker(Policy::from_json("{}", &[]), upstream, 0);
+        let client = broker.admit(Peer::new(1000, 100), Priority(4));
+        let (mut stream, server) = tokio::io::duplex(256);
+        let (_shutdown, shutdown_rx) = watch::channel(false);
+        let server = tokio::spawn(serve_connection(
             server,
-            client_context,
+            client,
             DEFAULT_MAX_PACKET_SIZE,
             shutdown_rx,
         ));
 
         // Each denial is answered, and the connection stays open.
         for code in [0x17b, 0x17a] {
-            client.write_all(&command(code)).await.unwrap();
-            assert_eq!(
-                read_packet(&mut client).await,
-                Response::error(0x000b_0143).as_bytes()
-            );
+            stream.write_all(&command_bytes(code, &[])).await.unwrap();
+            assert_eq!(read_packet(&mut stream).await, error_response(0x000b_0143));
         }
-        client.shutdown().await.unwrap();
+        stream.shutdown().await.unwrap();
 
-        server_task.await.unwrap().unwrap();
-        assert!(commands.lock().unwrap().is_empty());
+        server.await.unwrap().unwrap();
+        assert!(forwarded.lock().unwrap().is_empty());
     }
 
     /// Listener that replays scripted `accept` results, then waits forever.
-    struct ScriptedListener(
-        std::collections::VecDeque<io::Result<Accepted<tokio::io::DuplexStream>>>,
-    );
+    struct ScriptedListener(VecDeque<io::Result<Accepted<DuplexStream>>>);
 
     impl Listener for ScriptedListener {
-        type Stream = tokio::io::DuplexStream;
+        type Stream = DuplexStream;
 
         async fn accept(&mut self) -> io::Result<Accepted<Self::Stream>> {
             match self.0.pop_front() {
@@ -559,7 +474,7 @@ mod tests {
         }
     }
 
-    fn accepted(stream: tokio::io::DuplexStream) -> io::Result<Accepted<tokio::io::DuplexStream>> {
+    fn accepted(stream: DuplexStream) -> io::Result<Accepted<DuplexStream>> {
         Ok(Accepted {
             stream,
             peer: Peer::new(1000, 100),
@@ -567,23 +482,12 @@ mod tests {
     }
 
     fn start_serving(
-        listener: ScriptedListener,
+        script: impl Into<VecDeque<io::Result<Accepted<DuplexStream>>>>,
     ) -> (watch::Sender<bool>, tokio::task::JoinHandle<io::Result<()>>) {
-        let scheduler = CommandScheduler::start(
-            EchoUpstream {
-                commands: Arc::default(),
-            },
-            8,
-        );
-        let broker = Broker::new(
-            Policy::allow_all(),
-            scheduler,
-            AuthFailures::new(0, 0, std::time::Duration::ZERO),
-        );
         let (shutdown, shutdown_rx) = watch::channel(false);
         let server = tokio::spawn(serve_listener(
-            listener,
-            broker,
+            ScriptedListener(script.into()),
+            broker(Policy::allow_all(), FakeUpstream::echo(), 0),
             ConnectionRegistry::new(0, 0),
             DEFAULT_MAX_PACKET_SIZE,
             shutdown_rx,
@@ -594,14 +498,11 @@ mod tests {
     #[tokio::test(start_paused = true)]
     async fn keeps_accepting_after_connection_and_resource_errors() {
         let (mut client, server_end) = tokio::io::duplex(256);
-        let (shutdown, server) = start_serving(ScriptedListener(
-            [
-                Err(io::Error::from_raw_os_error(libc::ECONNABORTED)),
-                Err(io::Error::from_raw_os_error(libc::EMFILE)),
-                accepted(server_end),
-            ]
-            .into(),
-        ));
+        let (shutdown, server) = start_serving([
+            Err(io::Error::from_raw_os_error(libc::ECONNABORTED)),
+            Err(io::Error::from_raw_os_error(libc::EMFILE)),
+            accepted(server_end),
+        ]);
 
         // The client accepted after both errors is served.
         client.write_all(b"TPXH\0\x01\0\0\0\0\0\x04").await.unwrap();
@@ -616,13 +517,10 @@ mod tests {
     #[tokio::test]
     async fn stops_promptly_when_the_listening_socket_fails() {
         let (mut client, server_end) = tokio::io::duplex(256);
-        let (_shutdown, server) = start_serving(ScriptedListener(
-            [
-                accepted(server_end),
-                Err(io::Error::from_raw_os_error(libc::EBADF)),
-            ]
-            .into(),
-        ));
+        let (_shutdown, server) = start_serving([
+            accepted(server_end),
+            Err(io::Error::from_raw_os_error(libc::EBADF)),
+        ]);
 
         // The server returns the listener's error once its open connection has
         // been told to stop, well before the drain grace period would expire.

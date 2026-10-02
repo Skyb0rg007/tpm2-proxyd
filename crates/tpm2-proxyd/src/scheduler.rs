@@ -263,22 +263,14 @@ mod tests {
     use std::sync::{Arc, Mutex};
 
     use super::*;
+    use crate::testing::{command, echo_response};
 
     fn raw_command(code: u32) -> Command {
-        let mut bytes = Vec::from(0x8001u16.to_be_bytes());
-        bytes.extend_from_slice(&10u32.to_be_bytes());
-        bytes.extend_from_slice(&code.to_be_bytes());
-        Command::parse(bytes, 4096).unwrap()
+        command(code, &[])
     }
 
-    // A valid success response (`TPM_RC_SUCCESS`) carrying the command code in
-    // its body so each command's response is identifiable in assertions.
     fn success_response(code: u32) -> Response {
-        let mut bytes = Vec::from(0x8001u16.to_be_bytes());
-        bytes.extend_from_slice(&14u32.to_be_bytes());
-        bytes.extend_from_slice(&0u32.to_be_bytes());
-        bytes.extend_from_slice(&code.to_be_bytes());
-        Response::parse(bytes, 4096).unwrap()
+        Response::parse(echo_response(code), 4096).unwrap()
     }
 
     #[derive(Debug, PartialEq)]
@@ -352,6 +344,19 @@ mod tests {
         }
     }
 
+    /// The codes of the commands transacted so far, in order.
+    fn transacted(events: &Mutex<Vec<Event>>) -> Vec<u32> {
+        events
+            .lock()
+            .unwrap()
+            .iter()
+            .filter_map(|event| match event {
+                Event::Transact(_, code) => Some(*code),
+                Event::Close(_) => None,
+            })
+            .collect()
+    }
+
     /// Give spawned submissions time to reach the worker's queue.
     async fn let_submissions_queue() {
         for _ in 0..4 {
@@ -409,16 +414,7 @@ mod tests {
             low.await.unwrap().as_bytes(),
             success_response(0x17a).as_bytes()
         );
-        let transacted: Vec<u32> = events
-            .lock()
-            .unwrap()
-            .iter()
-            .filter_map(|event| match event {
-                Event::Transact(_, code) => Some(*code),
-                Event::Close(_) => None,
-            })
-            .collect();
-        assert_eq!(transacted, [0x17b, 0x17c, 0x17a]);
+        assert_eq!(transacted(&events), [0x17b, 0x17c, 0x17a]);
     }
 
     #[tokio::test]
@@ -458,16 +454,7 @@ mod tests {
         for task in waiting {
             task.await.unwrap();
         }
-        let transacted: Vec<u32> = events
-            .lock()
-            .unwrap()
-            .iter()
-            .filter_map(|event| match event {
-                Event::Transact(_, code) => Some(*code),
-                Event::Close(_) => None,
-            })
-            .collect();
-        assert_eq!(transacted, [0x17b, 0x17c, 0x17a, 0x17a, 0x17a]);
+        assert_eq!(transacted(&events), [0x17b, 0x17c, 0x17a, 0x17a, 0x17a]);
     }
 
     #[tokio::test]

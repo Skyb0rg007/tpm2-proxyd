@@ -303,17 +303,7 @@ fn handle_match(name: &str) -> Result<HandleMatch, String> {
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    fn command(code: u32, handles: &[u32]) -> Command {
-        let size = 10 + 4 * handles.len() as u32;
-        let mut bytes = Vec::from(0x8001u16.to_be_bytes());
-        bytes.extend_from_slice(&size.to_be_bytes());
-        bytes.extend_from_slice(&code.to_be_bytes());
-        for handle in handles {
-            bytes.extend_from_slice(&handle.to_be_bytes());
-        }
-        Command::parse(bytes, 4096).unwrap()
-    }
+    use crate::testing::command;
 
     const GET_RANDOM: u32 = 0x17b;
     const READ_PUBLIC: u32 = 0x173;

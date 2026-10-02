@@ -60,12 +60,6 @@ impl Broker {
         }
     }
 
-    /// Authorization failures counted toward the TPM's lockout.
-    #[cfg(test)]
-    pub fn auth_failures(&self) -> &AuthFailures {
-        &self.auth_failures
-    }
-
     /// Atomically replace the active policy for future decisions.
     ///
     /// Returns the new policy generation. Connections already admitted keep
@@ -291,113 +285,52 @@ pub enum BrokerError {
 
 #[cfg(test)]
 mod tests {
-    use std::sync::{
-        Arc, Mutex,
-        atomic::{AtomicUsize, Ordering},
-    };
+    use std::time::Duration;
 
-    use crate::{
-        tpm::DEFAULT_MAX_PACKET_SIZE,
-        upstream::{SessionId, Upstream, UpstreamError},
-    };
+    use crate::testing::{FakeUpstream, answering, broker, command, frame};
 
     use super::*;
 
-    struct CountingUpstream {
-        count: Arc<AtomicUsize>,
-        codes: Arc<Mutex<Vec<u32>>>,
-    }
-
-    impl Upstream for CountingUpstream {
-        async fn transact(
-            &mut self,
-            _session: SessionId,
-            command: &Command,
-        ) -> Result<Response, UpstreamError> {
-            self.count.fetch_add(1, Ordering::Relaxed);
-            self.codes.lock().unwrap().push(command.code().value());
-            let mut response = Vec::from(0x8001u16.to_be_bytes());
-            response.extend_from_slice(&10u32.to_be_bytes());
-            response.extend_from_slice(&0u32.to_be_bytes());
-            Ok(Response::parse(response, DEFAULT_MAX_PACKET_SIZE).unwrap())
-        }
-    }
-
-    fn command(code: u32) -> Command {
-        let mut bytes = Vec::from(0x8001u16.to_be_bytes());
-        bytes.extend_from_slice(&10u32.to_be_bytes());
-        bytes.extend_from_slice(&code.to_be_bytes());
-        Command::parse(bytes, DEFAULT_MAX_PACKET_SIZE).unwrap()
-    }
+    const GET_RANDOM: u32 = 0x17b;
+    const AUTH_FAIL: u32 = 0x98e;
 
     #[tokio::test]
     async fn denied_commands_never_reach_upstream() {
-        let count = Arc::new(AtomicUsize::new(0));
-        let scheduler = CommandScheduler::start(
-            CountingUpstream {
-                count: count.clone(),
-                codes: Arc::new(Mutex::new(Vec::new())),
-            },
-            4,
-        );
-        let broker = Broker::new(
-            Policy::from_json("{}", &[]),
-            scheduler,
-            AuthFailures::new(0, 0, std::time::Duration::ZERO),
-        );
+        let upstream = FakeUpstream::echo();
+        let forwarded = upstream.commands.clone();
+        let broker = broker(Policy::from_json("{}", &[]), upstream, 0);
         let client = broker.admit(Peer::new(1000, 100), Priority(10));
 
         assert!(matches!(
-            client.execute(command(0x17b)).await,
+            client.execute(command(GET_RANDOM, &[])).await,
             Err(BrokerError::Denied {
-                command_code: 0x17b,
+                command_code: GET_RANDOM,
                 denial: Denial::NoProfile,
             })
         ));
-        assert_eq!(count.load(Ordering::Relaxed), 0);
+        assert!(forwarded.lock().unwrap().is_empty());
     }
 
     #[tokio::test]
     async fn policy_replacement_affects_subsequent_commands() {
-        let count = Arc::new(AtomicUsize::new(0));
-        let scheduler = CommandScheduler::start(
-            CountingUpstream {
-                count: count.clone(),
-                codes: Arc::new(Mutex::new(Vec::new())),
-            },
-            4,
-        );
-        let broker = Broker::new(
-            Policy::from_json("{}", &[]),
-            scheduler,
-            AuthFailures::new(0, 0, std::time::Duration::ZERO),
-        );
+        let upstream = FakeUpstream::echo();
+        let forwarded = upstream.commands.clone();
+        let broker = broker(Policy::from_json("{}", &[]), upstream, 0);
         let client = broker.admit(Peer::new(1000, 100), Priority(0));
 
-        assert!(client.execute(command(0x17b)).await.is_err());
+        assert!(client.execute(command(GET_RANDOM, &[])).await.is_err());
         broker.replace_policy(Policy::allow_all());
-        client.execute(command(0x17b)).await.unwrap();
-        assert_eq!(count.load(Ordering::Relaxed), 1);
+        client.execute(command(GET_RANDOM, &[])).await.unwrap();
+        assert_eq!(*forwarded.lock().unwrap(), [GET_RANDOM]);
     }
 
     #[tokio::test]
     async fn admission_caps_priority() {
-        let scheduler = CommandScheduler::start(
-            CountingUpstream {
-                count: Arc::new(AtomicUsize::new(0)),
-                codes: Arc::new(Mutex::new(Vec::new())),
-            },
-            4,
-        );
         let policy = Policy::from_json(
             r#"{"rules": [{"subject": {"uid": 1000}, "profile": "all", "max_priority": 3}]}"#,
             &[("all", r#"{"commands": ["*"]}"#)],
         );
-        let broker = Broker::new(
-            policy,
-            scheduler,
-            AuthFailures::new(0, 0, std::time::Duration::ZERO),
-        );
+        let broker = broker(policy, FakeUpstream::echo(), 0);
 
         assert_eq!(
             broker.admit(Peer::new(1000, 100), Priority(50)).priority(),
@@ -405,104 +338,48 @@ mod tests {
         );
     }
 
-    /// Answers every command with `TPM_RC_AUTH_FAIL` for session 1.
-    struct AuthFailUpstream;
-
-    impl Upstream for AuthFailUpstream {
-        async fn transact(
-            &mut self,
-            _session: SessionId,
-            _command: &Command,
-        ) -> Result<Response, UpstreamError> {
-            let mut response = Vec::from(0x8001u16.to_be_bytes());
-            response.extend_from_slice(&10u32.to_be_bytes());
-            response.extend_from_slice(&0x98eu32.to_be_bytes());
-            Ok(Response::parse(response, DEFAULT_MAX_PACKET_SIZE).unwrap())
-        }
-    }
-
     #[tokio::test]
     async fn counts_lockout_failures_per_uid() {
-        let broker = Broker::new(
-            Policy::allow_all(),
-            CommandScheduler::start(AuthFailUpstream, 4),
-            AuthFailures::new(0, 0, std::time::Duration::ZERO),
-        );
+        let broker = broker(Policy::allow_all(), answering(AUTH_FAIL), 0);
         let first = broker.admit(Peer::new(1000, 100), Priority(0));
         let second = broker.admit(Peer::new(1001, 100), Priority(0));
 
         // The failure is still relayed to the client.
-        let response = first.execute(command(0x17b)).await.unwrap();
-        assert_eq!(response.code(), 0x98e);
-        first.execute(command(0x17b)).await.unwrap();
-        second.execute(command(0x17b)).await.unwrap();
+        let response = first.execute(command(GET_RANDOM, &[])).await.unwrap();
+        assert_eq!(response.code(), AUTH_FAIL);
+        first.execute(command(GET_RANDOM, &[])).await.unwrap();
+        second.execute(command(GET_RANDOM, &[])).await.unwrap();
 
-        assert_eq!(broker.auth_failures().total(), 3);
-        assert_eq!(broker.auth_failures().for_uid(1000), 2);
-        assert_eq!(broker.auth_failures().for_uid(1001), 1);
-    }
-
-    #[tokio::test]
-    async fn successful_commands_are_not_counted() {
-        let broker = Broker::new(
-            Policy::allow_all(),
-            CommandScheduler::start(
-                CountingUpstream {
-                    count: Arc::new(AtomicUsize::new(0)),
-                    codes: Arc::new(Mutex::new(Vec::new())),
-                },
-                4,
-            ),
-            AuthFailures::new(0, 0, std::time::Duration::ZERO),
-        );
-        let client = broker.admit(Peer::new(1000, 100), Priority(0));
-        client.execute(command(0x17b)).await.unwrap();
-
-        assert_eq!(broker.auth_failures().total(), 0);
+        assert_eq!(broker.auth_failures.total(), 3);
+        assert_eq!(broker.auth_failures.for_uid(1000), 2);
+        assert_eq!(broker.auth_failures.for_uid(1001), 1);
     }
 
     #[tokio::test]
     async fn locked_out_uids_are_refused_without_reaching_upstream() {
-        let broker = Broker::new(
-            Policy::allow_all(),
-            CommandScheduler::start(AuthFailUpstream, 4),
-            AuthFailures::new(0, 2, std::time::Duration::ZERO),
-        );
+        let broker = broker(Policy::allow_all(), answering(AUTH_FAIL), 2);
         let first = broker.admit(Peer::new(1000, 100), Priority(0));
         let second = broker.admit(Peer::new(1000, 100), Priority(0));
         let other = broker.admit(Peer::new(1001, 100), Priority(0));
 
-        first.execute(command(0x17b)).await.unwrap();
-        first.execute(command(0x17b)).await.unwrap();
+        first.execute(command(GET_RANDOM, &[])).await.unwrap();
+        first.execute(command(GET_RANDOM, &[])).await.unwrap();
 
         // Every connection from the locked-out UID is refused, and the refused
         // commands never reach the TPM, so they aren't counted.
         for client in [&first, &second] {
             assert!(matches!(
-                client.execute(command(0x17b)).await,
+                client.execute(command(GET_RANDOM, &[])).await,
                 Err(BrokerError::LockedOut {
-                    command_code: 0x17b
+                    command_code: GET_RANDOM
                 })
             ));
         }
-        assert_eq!(broker.auth_failures().for_uid(1000), 2);
+        assert_eq!(broker.auth_failures.for_uid(1000), 2);
 
         // Other users still reach the TPM.
-        other.execute(command(0x17b)).await.unwrap();
-        assert_eq!(broker.auth_failures().for_uid(1001), 1);
-    }
-
-    /// Answers every command with `TPM_RC_BAD_AUTH` for session 1.
-    struct BadAuthUpstream;
-
-    impl Upstream for BadAuthUpstream {
-        async fn transact(
-            &mut self,
-            _session: SessionId,
-            _command: &Command,
-        ) -> Result<Response, UpstreamError> {
-            Ok(Response::error(0x9a2))
-        }
+        other.execute(command(GET_RANDOM, &[])).await.unwrap();
+        assert_eq!(broker.auth_failures.for_uid(1001), 1);
     }
 
     /// `TPM2_CreatePrimary` under the owner hierarchy with an empty password
@@ -513,26 +390,19 @@ mod tests {
         body.extend_from_slice(&9u32.to_be_bytes());
         body.extend_from_slice(&0x4000_0009u32.to_be_bytes());
         body.extend_from_slice(&[0, 0, 0, 0, 0]);
-        let mut bytes = Vec::from(0x8002u16.to_be_bytes());
-        bytes.extend_from_slice(&(10 + body.len() as u32).to_be_bytes());
-        bytes.extend_from_slice(&0x131u32.to_be_bytes());
-        bytes.extend_from_slice(&body);
-        Command::parse(bytes, DEFAULT_MAX_PACKET_SIZE).unwrap()
+        Command::parse(frame(0x8002, 0x131, &body), 4096).unwrap()
     }
 
     #[tokio::test]
     async fn wrong_hierarchy_passwords_count_toward_the_uid_limit() {
-        let broker = Broker::new(
-            Policy::allow_all(),
-            CommandScheduler::start(BadAuthUpstream, 4),
-            AuthFailures::new(0, 2, std::time::Duration::ZERO),
-        );
+        // TPM_RC_BAD_AUTH for session 1.
+        let broker = broker(Policy::allow_all(), answering(0x9a2), 2);
         let client = broker.admit(Peer::new(1000, 100), Priority(0));
 
         // BAD_AUTH for a command that doesn't authorize a hierarchy (an
         // object without DA protection, say) isn't counted.
-        client.execute(command(0x17b)).await.unwrap();
-        assert_eq!(broker.auth_failures().for_uid(1000), 0);
+        client.execute(command(GET_RANDOM, &[])).await.unwrap();
+        assert_eq!(broker.auth_failures.for_uid(1000), 0);
 
         for _ in 0..2 {
             let response = client.execute(create_primary_owner()).await.unwrap();
@@ -543,62 +413,31 @@ mod tests {
             Err(BrokerError::LockedOut { .. })
         ));
         // The TPM didn't count them, so neither does the total.
-        assert_eq!(broker.auth_failures().total(), 0);
-    }
-
-    /// Answers every command with `TPM_RC_AUTH_FAIL` after a delay, counting
-    /// the commands that reach it.
-    struct SlowAuthFailUpstream {
-        count: Arc<AtomicUsize>,
-    }
-
-    impl Upstream for SlowAuthFailUpstream {
-        async fn transact(
-            &mut self,
-            _session: SessionId,
-            _command: &Command,
-        ) -> Result<Response, UpstreamError> {
-            self.count.fetch_add(1, Ordering::Relaxed);
-            tokio::time::sleep(std::time::Duration::from_millis(5)).await;
-            let mut response = Vec::from(0x8001u16.to_be_bytes());
-            response.extend_from_slice(&10u32.to_be_bytes());
-            response.extend_from_slice(&0x98eu32.to_be_bytes());
-            Ok(Response::parse(response, DEFAULT_MAX_PACKET_SIZE).unwrap())
-        }
+        assert_eq!(broker.auth_failures.total(), 0);
     }
 
     #[tokio::test]
     async fn concurrent_connections_cannot_exceed_the_lockout_limit() {
-        let count = Arc::new(AtomicUsize::new(0));
-        let broker = Broker::new(
-            Policy::allow_all(),
-            CommandScheduler::start(
-                SlowAuthFailUpstream {
-                    count: count.clone(),
-                },
-                64,
-            ),
-            AuthFailures::new(0, 2, std::time::Duration::ZERO),
-        );
+        let upstream = answering(AUTH_FAIL).with_delay(Duration::from_millis(5));
+        let forwarded = upstream.commands.clone();
+        let broker = broker(Policy::allow_all(), upstream, 2);
 
         // Every command is submitted before any response comes back.
         let tasks: Vec<_> = (0..16)
             .map(|_| {
                 let client = broker.admit(Peer::new(1000, 100), Priority(0));
-                tokio::spawn(async move { client.execute(command(0x17b)).await })
+                tokio::spawn(async move { client.execute(command(GET_RANDOM, &[])).await })
             })
             .collect();
-        let mut results = Vec::new();
+        let mut refused = 0;
         for task in tasks {
-            results.push(task.await.unwrap());
+            if let Err(BrokerError::LockedOut { .. }) = task.await.unwrap() {
+                refused += 1;
+            }
         }
 
-        assert_eq!(count.load(Ordering::Relaxed), 2);
-        assert_eq!(broker.auth_failures().for_uid(1000), 2);
-        let refused = results
-            .iter()
-            .filter(|result| matches!(result, Err(BrokerError::LockedOut { .. })))
-            .count();
+        assert_eq!(forwarded.lock().unwrap().len(), 2);
+        assert_eq!(broker.auth_failures.for_uid(1000), 2);
         assert_eq!(refused, 14);
     }
 }

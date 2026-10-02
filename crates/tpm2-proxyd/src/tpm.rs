@@ -303,30 +303,21 @@ fn invalid_data(error: ParseError) -> io::Error {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::testing::{command_bytes, frame};
 
     fn command(code: u32, body: &[u8]) -> Vec<u8> {
-        let size = (HEADER_SIZE + body.len()) as u32;
-        let mut bytes = Vec::from(TpmSt::NoSessions.value().to_be_bytes());
-        bytes.extend_from_slice(&size.to_be_bytes());
-        bytes.extend_from_slice(&code.to_be_bytes());
-        bytes.extend_from_slice(body);
-        bytes
+        frame(TpmSt::NoSessions.value(), code, body)
     }
 
     #[test]
-    fn parses_command_header() {
-        let command = Command::parse(command(0x17b, &[0, 8]), 4096).unwrap();
-        assert_eq!(command.code(), TpmCc::GetRandom);
-        assert!(command.is_code(TpmCc::GetRandom));
-    }
-
-    #[test]
-    fn parses_the_handle_area() {
+    fn parses_the_command_code_and_handle_area() {
         // TPM2_ReadPublic takes one handle.
-        let read_public = Command::parse(command(0x173, &0x8000_0001u32.to_be_bytes()), 4096);
-        assert_eq!(read_public.unwrap().handles(), [0x8000_0001]);
+        let read_public = Command::parse(command_bytes(0x173, &[0x8000_0001]), 4096).unwrap();
+        assert_eq!(read_public.code(), TpmCc::ReadPublic);
+        assert_eq!(read_public.handles(), [0x8000_0001]);
 
         let get_random = Command::parse(command(0x17b, &[0, 8]), 4096).unwrap();
+        assert_eq!(get_random.code(), TpmCc::GetRandom);
         assert!(get_random.handles().is_empty());
     }
 
@@ -360,8 +351,7 @@ mod tests {
 
     #[test]
     fn finds_the_handle_flush_context_flushes() {
-        let flush = command(0x165, &0x0200_0001u32.to_be_bytes());
-        let flush = Command::parse(flush, 4096).unwrap();
+        let flush = Command::parse(command(0x165, &0x0200_0001u32.to_be_bytes()), 4096).unwrap();
         assert_eq!(flush.flush_handle(), Some(0x0200_0001));
         let other = Command::parse(command(0x17b, &8u16.to_be_bytes()), 4096).unwrap();
         assert_eq!(other.flush_handle(), None);
@@ -379,8 +369,7 @@ mod tests {
         auth.extend_from_slice(&[0, 0, 0x01, 0, 0]);
         body.extend_from_slice(&(auth.len() as u32).to_be_bytes());
         body.extend_from_slice(&auth);
-        let mut bytes = command(0x15e, &body);
-        bytes[..2].copy_from_slice(&TpmSt::Sessions.value().to_be_bytes());
+        let bytes = frame(TpmSt::Sessions.value(), 0x15e, &body);
         let unseal = Command::parse(bytes, 4096).unwrap();
         assert_eq!(
             unseal.sessions(),
@@ -393,14 +382,14 @@ mod tests {
         // TPM_RC_COMMAND_CODE in the resource-manager layer, as the kernel
         // answers for a command the TPM lacks, and a vendor-defined code.
         for code in [0x000b_0143, 0x0000_0520] {
-            let response = Response::parse(Response::error(code).into_bytes(), 4096).unwrap();
-            assert_eq!(response.code(), code);
+            let bytes = Response::error(code).as_bytes().to_vec();
+            assert_eq!(Response::parse(bytes, 4096).unwrap().code(), code);
         }
     }
 
     #[test]
     fn rejects_responses_with_an_invalid_tag() {
-        let mut bytes = Response::error(0).into_bytes();
+        let mut bytes = Response::error(0).as_bytes().to_vec();
         bytes[..2].copy_from_slice(&0x1234u16.to_be_bytes());
         assert_eq!(
             Response::parse(bytes, 4096),
@@ -412,27 +401,13 @@ mod tests {
     async fn reads_back_to_back_commands() {
         let first = command(0x17b, &[0, 8]);
         let second = command(0x17a, &[]);
-        let mut input = Vec::new();
-        input.extend_from_slice(&first);
-        input.extend_from_slice(&second);
+        let input = [first.clone(), second.clone()].concat();
         let mut input = &input[..];
 
-        assert_eq!(
-            read_command(&mut input, 4096)
-                .await
-                .unwrap()
-                .unwrap()
-                .as_bytes(),
-            first
-        );
-        assert_eq!(
-            read_command(&mut input, 4096)
-                .await
-                .unwrap()
-                .unwrap()
-                .as_bytes(),
-            second
-        );
+        for expected in [first, second] {
+            let command = read_command(&mut input, 4096).await.unwrap().unwrap();
+            assert_eq!(command.as_bytes(), expected);
+        }
         assert!(read_command(&mut input, 4096).await.unwrap().is_none());
     }
 }

@@ -283,15 +283,12 @@ impl Policy {
 mod tests {
     use super::*;
 
-    fn command(code: u32) -> Command {
-        let mut bytes = Vec::from(0x8001u16.to_be_bytes());
-        bytes.extend_from_slice(&10u32.to_be_bytes());
-        bytes.extend_from_slice(&code.to_be_bytes());
-        Command::parse(bytes, 4096).unwrap()
-    }
-
     const GET_RANDOM: u32 = 0x17b;
     const GET_CAPABILITY: u32 = 0x17a;
+
+    fn command(code: u32) -> Command {
+        crate::testing::command(code, &[])
+    }
 
     const PROFILES: &[(&str, &str)] = &[
         ("random", r#"{"commands": ["TPM_CC_GetRandom"]}"#),
@@ -413,6 +410,13 @@ mod tests {
             })
             .response_code(),
             0x000b_028b
+        );
+        assert_eq!(
+            Denial::NotOwnSession {
+                handle: 0x0200_0000
+            }
+            .response_code(),
+            0x000b_01cb
         );
     }
 

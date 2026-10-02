@@ -218,7 +218,9 @@ A plain `cargo build` only builds `default-members` (the daemon), not the TCTI
 `cdylib`; forgetting `--workspace` shows up as a `dlopen` "cannot open shared
 object file" error.
 
-Tests: in-crate unit tests, `crates/tpm2-proxyd/src/server/smoke.rs` (full
+Tests: in-crate unit tests (shared fixtures — packet builders, a fake
+upstream, a test broker — live in `crates/tpm2-proxyd/src/testing.rs`; use them
+rather than adding local copies), `crates/tpm2-proxyd/src/server/smoke.rs` (full
 server stack over a real Unix socket with a fake upstream),
 `crates/tpm2-proxyd/tests/e2e.rs` (real client → daemon → fresh swtpm per
 test), and `tests/apps/` (shell scripts driving tpm2-openssl and

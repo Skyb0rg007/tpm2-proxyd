@@ -247,6 +247,7 @@ fn forward(device: &mut impl TpmTransport, command: &[u8]) -> Result<Vec<u8>, Up
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::{testing::frame, tpm::DEFAULT_MAX_PACKET_SIZE};
 
     #[tokio::test]
     async fn answers_commands_too_large_for_the_kernel() {
@@ -254,14 +255,10 @@ mod tests {
         let mut upstream =
             TpmDeviceUpstream::open("/dev/null", 4096, Duration::from_secs(1)).unwrap();
         // TPM2_GetRandom padded past the kernel's limit.
-        let size = DEVICE_MAX_COMMAND_SIZE + 2;
-        let mut bytes = Vec::from(0x8001u16.to_be_bytes());
-        bytes.extend_from_slice(&(size as u32).to_be_bytes());
-        bytes.extend_from_slice(&0x17bu32.to_be_bytes());
-        bytes.resize(size, 0);
-        let command = Command::parse(bytes, crate::tpm::DEFAULT_MAX_PACKET_SIZE).unwrap();
+        let bytes = frame(0x8001, 0x17b, &[0; DEVICE_MAX_COMMAND_SIZE]);
+        let command = Command::parse(bytes, DEFAULT_MAX_PACKET_SIZE).unwrap();
 
         let response = upstream.transact(SessionId(0), &command).await.unwrap();
-        assert_eq!(response.code(), RC_COMMAND_TOO_LARGE);
+        assert_eq!(response.code(), 0x000b_0142);
     }
 }

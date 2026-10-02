@@ -47,6 +47,9 @@ mod scheduler;
 mod server;
 /// Systemd socket activation, readiness, and watchdog integration.
 mod systemd;
+/// Fixtures shared by the unit tests.
+#[cfg(test)]
+mod testing;
 /// TPM command/response inspection.
 mod tpm;
 /// Upstream client that talks to the physical TPM's resource manager.

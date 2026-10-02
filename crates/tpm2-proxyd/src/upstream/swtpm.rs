@@ -279,6 +279,8 @@ mod tests {
 
     use tokio::net::UnixListener;
 
+    use crate::testing::{command, echo_response};
+
     fn temp_path(tag: &str) -> PathBuf {
         std::env::temp_dir().join(format!(
             "tpm2-proxyd-swtpm-{}-{tag}-{}.sock",
@@ -288,21 +290,6 @@ mod tests {
                 .unwrap()
                 .as_nanos(),
         ))
-    }
-
-    fn command(code: u32) -> Command {
-        let mut bytes = Vec::from(0x8001u16.to_be_bytes());
-        bytes.extend_from_slice(&10u32.to_be_bytes());
-        bytes.extend_from_slice(&code.to_be_bytes());
-        Command::parse(bytes, 4096).unwrap()
-    }
-
-    fn response(code: u32) -> Vec<u8> {
-        let mut bytes = Vec::from(0x8001u16.to_be_bytes());
-        bytes.extend_from_slice(&14u32.to_be_bytes());
-        bytes.extend_from_slice(&0u32.to_be_bytes());
-        bytes.extend_from_slice(&code.to_be_bytes());
-        bytes
     }
 
     /// Minimal fake swtpm data channel: read each self-framed command, reply with
@@ -319,7 +306,7 @@ mod tests {
                 let mut body = vec![0u8; size - HEADER_SIZE];
                 stream.read_exact(&mut body).await.unwrap();
                 let code = u32::from_be_bytes(header[6..10].try_into().unwrap());
-                stream.write_all(&response(code)).await.unwrap();
+                stream.write_all(&echo_response(code)).await.unwrap();
             }
         });
     }
@@ -339,15 +326,15 @@ mod tests {
         .unwrap();
 
         let reply = upstream
-            .transact(SessionId(0), &command(0x17b))
+            .transact(SessionId(0), &command(0x17b, &[]))
             .await
             .unwrap();
-        assert_eq!(reply.as_bytes(), response(0x17b));
+        assert_eq!(reply.as_bytes(), echo_response(0x17b));
         let reply = upstream
-            .transact(SessionId(0), &command(0x17a))
+            .transact(SessionId(0), &command(0x17a, &[]))
             .await
             .unwrap();
-        assert_eq!(reply.as_bytes(), response(0x17a));
+        assert_eq!(reply.as_bytes(), echo_response(0x17a));
 
         let _ = std::fs::remove_file(&path);
     }
