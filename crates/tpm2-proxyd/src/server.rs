@@ -15,8 +15,6 @@
 pub(crate) mod connection;
 /// The hello that opens every connection.
 pub(crate) mod hello;
-/// Peer credential (uid/gid/pid) resolution from the connected socket.
-pub(crate) mod peer;
 /// Active downstream connection tracking and concurrency cap.
 pub(crate) mod registry;
 /// Raw Unix-domain socket TPM listener.

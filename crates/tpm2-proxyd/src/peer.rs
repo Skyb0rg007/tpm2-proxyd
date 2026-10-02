@@ -2,13 +2,8 @@
 //
 // SPDX-License-Identifier: Apache-2.0
 
-//! Transport-independent peer identity.
-//!
-//! Unix listeners populate this from the credentials the kernel records for a
-//! socket's peer (`SO_PEERCRED` and `SO_PEERGROUPS`). Other transports can
-//! provide an authenticated identity during their own admission handshake.
-
-#![allow(dead_code)] // Main wiring is implemented in a later change.
+//! Client identity, from the credentials the kernel records for a Unix
+//! socket's peer (`SO_PEERCRED` and `SO_PEERGROUPS`).
 
 use std::io;
 use std::os::fd::{AsFd, AsRawFd, BorrowedFd};
@@ -24,12 +19,13 @@ pub struct Peer {
     pub primary_gid: u32,
     /// Unix supplementary group IDs.
     pub supplementary_gids: Vec<u32>,
-    /// Process ID of the peer, when the transport provides it.
+    /// Process ID of the peer, if the kernel reports one.
     pub pid: Option<u32>,
 }
 
 impl Peer {
     /// Construct a peer with no supplementary groups and an unknown PID.
+    #[cfg(test)]
     pub fn new(uid: u32, primary_gid: u32) -> Self {
         Self {
             uid,

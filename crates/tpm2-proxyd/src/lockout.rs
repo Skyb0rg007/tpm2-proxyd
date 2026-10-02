@@ -38,7 +38,7 @@ use std::{
 
 use tpm2_protocol::data::{TpmCc, TpmRc, TpmRcBase};
 
-use crate::server::peer::Peer;
+use crate::peer::Peer;
 
 /// Default number of failures after which every further failure is logged as a
 /// warning.

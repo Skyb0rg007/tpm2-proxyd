@@ -32,9 +32,9 @@ use std::{collections::HashMap, fmt, fs, io, path::Path, sync::Arc};
 use serde::Deserialize;
 
 use crate::{
+    peer::Peer,
     profile::{Profile, Refusal},
     scheduler::Priority,
-    server::peer::Peer,
     tpm::Command,
 };
 

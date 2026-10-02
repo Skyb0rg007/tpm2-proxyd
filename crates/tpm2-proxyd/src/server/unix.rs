@@ -18,9 +18,9 @@ use std::{
 
 use tokio::net::{UnixListener, UnixStream};
 
-use crate::server::{
-    connection::{Accepted, Listener},
+use crate::{
     peer::Peer,
+    server::connection::{Accepted, Listener},
 };
 
 /// Where the listening socket came from.

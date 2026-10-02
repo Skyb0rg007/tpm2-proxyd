@@ -20,10 +20,10 @@ use crate::{
     broker::{Broker, BrokerError, Client},
     lockout,
     log_limit::{Kind, limited},
+    peer::Peer,
     scheduler::Priority,
     server::{
         hello::{self, Hello, HelloStatus},
-        peer::Peer,
         registry::ConnectionRegistry,
     },
     tpm::{self, Command, Response},

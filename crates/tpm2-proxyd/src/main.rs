@@ -35,6 +35,8 @@ mod cli;
 mod lockout;
 /// Per-UID limits on the log lines a client can trigger at will.
 mod log_limit;
+/// Client identity from Unix peer credentials.
+mod peer;
 /// Access-control rule model, policy file loading, and evaluation engine.
 mod policy;
 /// Command profiles loaded from the profiles directory.

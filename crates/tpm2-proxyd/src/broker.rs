@@ -31,9 +31,9 @@ use std::{
 use crate::{
     lockout::{self, AuthFailures},
     log_limit::{Kind, limited},
+    peer::Peer,
     policy::{Denial, Policy},
     scheduler::{CommandScheduler, ExecuteError, Priority, Session, TransactionGuard},
-    server::peer::Peer,
     tpm::{Command, Response},
 };
 
