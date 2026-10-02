@@ -21,10 +21,12 @@ use std::sync::{
 use crate::{
     lockout::{self, AuthFailures},
     policy::{Denial, Policy},
-    scheduler::{CommandScheduler, ExecuteError, Priority, Session},
+    scheduler::{CommandScheduler, ExecuteError, Priority, Session, TransactionGuard},
     server::peer::Peer,
     tpm::{Command, Response},
 };
+
+use tpm2_protocol::data::TpmCc;
 
 /// Shared broker state.
 #[derive(Clone)]
@@ -108,16 +110,10 @@ impl Client {
 
     /// Authorize and execute one parsed TPM command.
     pub async fn execute(&self, command: Command) -> Result<Response, BrokerError> {
+        // A cheap early refusal. The check that counts is the lockout guard's,
+        // which runs in the scheduler right before the command is sent.
         if self.broker.auth_failures.is_locked_out(self.peer.uid) {
-            tracing::debug!(
-                uid = self.peer.uid,
-                pid = self.peer.pid,
-                command = %command.code(),
-                "command refused: user is locked out"
-            );
-            return Err(BrokerError::LockedOut {
-                command_code: command.code().value(),
-            });
+            return Err(self.locked_out(command.code()));
         }
         let authorized = self
             .broker
@@ -140,11 +136,53 @@ impl Client {
         }
 
         let code = command.code();
-        let response = self.session.execute(self.priority, command).await?;
-        if lockout::is_auth_failure(response.code()) {
-            self.broker.auth_failures.record(&self.peer, code);
+        let guard = LockoutGuard {
+            auth_failures: self.broker.auth_failures.clone(),
+            peer: self.peer.clone(),
+            command: code,
+        };
+        match self
+            .session
+            .execute(self.priority, command, Some(Box::new(guard)))
+            .await
+        {
+            Ok(response) => Ok(response),
+            Err(ExecuteError::Refused) => Err(self.locked_out(code)),
+            Err(error) => Err(error.into()),
         }
-        Ok(response)
+    }
+
+    fn locked_out(&self, command: TpmCc) -> BrokerError {
+        tracing::debug!(
+            uid = self.peer.uid,
+            pid = self.peer.pid,
+            %command,
+            "command refused: user is locked out"
+        );
+        BrokerError::LockedOut {
+            command_code: command.value(),
+        }
+    }
+}
+
+/// Applies the per-UID lockout in the scheduler worker: the check and the
+/// count of the response happen in the same serial step, so concurrent
+/// connections can't get more commands past the limit than it allows.
+struct LockoutGuard {
+    auth_failures: Arc<AuthFailures>,
+    peer: Peer,
+    command: TpmCc,
+}
+
+impl TransactionGuard for LockoutGuard {
+    fn admit(&self) -> bool {
+        !self.auth_failures.is_locked_out(self.peer.uid)
+    }
+
+    fn completed(&self, response: &Response) {
+        if lockout::is_auth_failure(response.code()) {
+            self.auth_failures.record(&self.peer, self.command);
+        }
     }
 }
 
@@ -373,5 +411,62 @@ mod tests {
         // Other users still reach the TPM.
         other.execute(command(0x17b)).await.unwrap();
         assert_eq!(broker.auth_failures().for_uid(1001), 1);
+    }
+
+    /// Answers every command with `TPM_RC_AUTH_FAIL` after a delay, counting
+    /// the commands that reach it.
+    struct SlowAuthFailUpstream {
+        count: Arc<AtomicUsize>,
+    }
+
+    #[async_trait::async_trait]
+    impl Upstream for SlowAuthFailUpstream {
+        async fn transact(
+            &mut self,
+            _session: SessionId,
+            _command: &Command,
+        ) -> Result<Response, UpstreamError> {
+            self.count.fetch_add(1, Ordering::Relaxed);
+            tokio::time::sleep(std::time::Duration::from_millis(5)).await;
+            let mut response = Vec::from(0x8001u16.to_be_bytes());
+            response.extend_from_slice(&10u32.to_be_bytes());
+            response.extend_from_slice(&0x98eu32.to_be_bytes());
+            Ok(Response::parse(response, DEFAULT_MAX_PACKET_SIZE).unwrap())
+        }
+    }
+
+    #[tokio::test]
+    async fn concurrent_connections_cannot_exceed_the_lockout_limit() {
+        let count = Arc::new(AtomicUsize::new(0));
+        let broker = Broker::new(
+            Policy::allow_all(),
+            CommandScheduler::start(
+                SlowAuthFailUpstream {
+                    count: count.clone(),
+                },
+                64,
+            ),
+            AuthFailures::new(0, 2, std::time::Duration::ZERO),
+        );
+
+        // Every command is submitted before any response comes back.
+        let tasks: Vec<_> = (0..16)
+            .map(|_| {
+                let client = broker.admit(Peer::new(1000, 100), Priority(0));
+                tokio::spawn(async move { client.execute(command(0x17b)).await })
+            })
+            .collect();
+        let mut results = Vec::new();
+        for task in tasks {
+            results.push(task.await.unwrap());
+        }
+
+        assert_eq!(count.load(Ordering::Relaxed), 2);
+        assert_eq!(broker.auth_failures().for_uid(1000), 2);
+        let refused = results
+            .iter()
+            .filter(|result| matches!(result, Err(BrokerError::LockedOut { .. })))
+            .count();
+        assert_eq!(refused, 14);
     }
 }

@@ -13,6 +13,12 @@
 //! Each client submits through its own [`Session`], which tags its commands so
 //! the upstream can keep per-client TPM state apart. Dropping the session tells
 //! the upstream to release that state.
+//!
+//! A command may carry a [`TransactionGuard`], which the worker consults just
+//! before sending it and tells about its response. Because the worker runs one
+//! transaction at a time, a guard sees the outcome of every earlier command,
+//! so a decision such as "this user is locked out" can't race with commands
+//! already queued or in flight.
 
 use std::cmp::Ordering;
 use std::collections::BinaryHeap;
@@ -70,6 +76,14 @@ impl CommandScheduler {
     }
 }
 
+/// Checks run by the worker around one command's transaction.
+pub trait TransactionGuard: Send {
+    /// Whether the command may still be sent; asked just before sending it.
+    fn admit(&self) -> bool;
+    /// Called with the TPM's response once the command completes.
+    fn completed(&self, response: &Response);
+}
+
 /// One client's upstream session; its upstream state is released on drop.
 pub struct Session {
     id: SessionId,
@@ -79,10 +93,14 @@ pub struct Session {
 
 impl Session {
     /// Queue one command and wait until the upstream TCTI returns its response.
+    ///
+    /// The worker consults `guard`, if any, around the transaction; a command
+    /// its guard refuses is never sent.
     pub async fn execute(
         &self,
         priority: Priority,
         command: Command,
+        guard: Option<Box<dyn TransactionGuard>>,
     ) -> Result<Response, ExecuteError> {
         let (reply, response) = oneshot::channel();
         self.commands
@@ -91,15 +109,13 @@ impl Session {
                 sequence: 0,
                 session: self.id,
                 command,
+                guard,
                 reply,
             })
             .await
             .map_err(|_| ExecuteError::SchedulerStopped)?;
 
-        response
-            .await
-            .map_err(|_| ExecuteError::SchedulerStopped)?
-            .map_err(ExecuteError::Upstream)
+        response.await.map_err(|_| ExecuteError::SchedulerStopped)?
     }
 }
 
@@ -115,6 +131,9 @@ pub enum ExecuteError {
     /// The scheduler worker is no longer running.
     #[error("TPM command scheduler stopped")]
     SchedulerStopped,
+    /// The command's guard refused it, so it was never sent.
+    #[error("TPM command refused before it was sent")]
+    Refused,
     /// The upstream TCTI failed or returned a malformed response.
     #[error(transparent)]
     Upstream(#[from] UpstreamError),
@@ -125,7 +144,8 @@ struct QueuedCommand {
     sequence: u64,
     session: SessionId,
     command: Command,
-    reply: oneshot::Sender<Result<Response, UpstreamError>>,
+    guard: Option<Box<dyn TransactionGuard>>,
+    reply: oneshot::Sender<Result<Response, ExecuteError>>,
 }
 
 impl PartialEq for QueuedCommand {
@@ -192,8 +212,17 @@ async fn run_command_worker<U>(
         if command.reply.is_closed() {
             continue;
         }
+        if let Some(guard) = &command.guard
+            && !guard.admit()
+        {
+            let _ = command.reply.send(Err(ExecuteError::Refused));
+            continue;
+        }
         let result = upstream.transact(command.session, &command.command).await;
-        let _ = command.reply.send(result);
+        if let (Some(guard), Ok(response)) = (&command.guard, &result) {
+            guard.completed(response);
+        }
+        let _ = command.reply.send(result.map_err(ExecuteError::Upstream));
     }
 }
 
@@ -317,7 +346,7 @@ mod tests {
         let first_session = scheduler.open_session();
         let first = tokio::spawn(async move {
             first_session
-                .execute(Priority(0), raw_command(0x17b))
+                .execute(Priority(0), raw_command(0x17b), None)
                 .await
                 .unwrap()
         });
@@ -326,14 +355,14 @@ mod tests {
         let low_session = scheduler.open_session();
         let low = tokio::spawn(async move {
             low_session
-                .execute(Priority(1), raw_command(0x17a))
+                .execute(Priority(1), raw_command(0x17a), None)
                 .await
                 .unwrap()
         });
         let high_session = scheduler.open_session();
         let high = tokio::spawn(async move {
             high_session
-                .execute(Priority(10), raw_command(0x17c))
+                .execute(Priority(10), raw_command(0x17c), None)
                 .await
                 .unwrap()
         });
@@ -382,7 +411,7 @@ mod tests {
 
         let first = tokio::spawn(async move {
             first_session
-                .execute(Priority(0), raw_command(0x17b))
+                .execute(Priority(0), raw_command(0x17b), None)
                 .await
                 .unwrap()
         });
@@ -390,10 +419,11 @@ mod tests {
 
         // Queue a command behind the blocked transaction, then disconnect its
         // client before the worker reaches it.
-        let gone =
-            tokio::spawn(
-                async move { gone_session.execute(Priority(10), raw_command(0x17a)).await },
-            );
+        let gone = tokio::spawn(async move {
+            gone_session
+                .execute(Priority(10), raw_command(0x17a), None)
+                .await
+        });
         let_submissions_queue().await;
         gone.abort();
         assert!(gone.await.unwrap_err().is_cancelled());
@@ -403,7 +433,7 @@ mod tests {
         // A later, lower-priority command completing proves the worker has
         // moved past the disconnected client's queued command.
         later_session
-            .execute(Priority(0), raw_command(0x17c))
+            .execute(Priority(0), raw_command(0x17c), None)
             .await
             .unwrap();
 
