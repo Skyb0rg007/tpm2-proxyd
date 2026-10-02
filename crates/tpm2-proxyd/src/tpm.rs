@@ -17,7 +17,7 @@ use tokio::io::{AsyncRead, AsyncReadExt};
 use tpm2_protocol::{
     TpmError,
     data::{TpmCc, TpmSt},
-    frame::{TpmCommand as WireCommand, TpmResponse as WireResponse},
+    frame::TpmCommand as WireCommand,
 };
 
 /// Size of a TPM command or response header.
@@ -53,7 +53,7 @@ impl Command {
                 actual: bytes.len(),
             });
         }
-        validate_command_tag(&bytes)?;
+        validate_tag(&bytes)?;
         let frame = WireCommand::cast(&bytes)?;
         let code = frame.cc()?;
         let handles = frame
@@ -107,7 +107,13 @@ impl Response {
         Self(bytes)
     }
 
-    /// Validate a complete TPM response.
+    /// Validate a complete TPM response's framing: its size and tag.
+    ///
+    /// The response code isn't checked against the codes the TCG defines. The
+    /// kernel resource manager answers with its own layered codes (such as
+    /// `TPM_RC_COMMAND_CODE` in the resource-manager layer for a command the
+    /// TPM lacks), and TPMs may return vendor codes; either way the client
+    /// gets the response unchanged.
     pub fn parse(bytes: Vec<u8>, max_size: usize) -> Result<Self, ParseError> {
         let size = parse_packet_size(&bytes, max_size)?;
         if size as usize != bytes.len() {
@@ -116,7 +122,7 @@ impl Response {
                 actual: bytes.len(),
             });
         }
-        WireResponse::cast(&bytes)?;
+        validate_tag(&bytes)?;
         Ok(Self(bytes))
     }
 
@@ -147,9 +153,9 @@ pub enum ParseError {
     /// Packet is shorter than the fixed TPM header.
     #[error("TPM packet is shorter than the {HEADER_SIZE}-byte header")]
     ShortHeader,
-    /// Command tag is not valid for a TPM 2.0 command.
-    #[error("invalid TPM command tag {0:#06x}")]
-    InvalidCommandTag(u16),
+    /// The tag is neither `TPM_ST_NO_SESSIONS` nor `TPM_ST_SESSIONS`.
+    #[error("invalid TPM tag {0:#06x}")]
+    InvalidTag(u16),
     /// Header declares a packet shorter than the header itself.
     #[error("TPM packet declares invalid size {0}")]
     InvalidSize(u32),
@@ -207,14 +213,14 @@ fn parse_packet_size(bytes: &[u8], max_size: usize) -> Result<u32, ParseError> {
     Ok(size)
 }
 
-fn validate_command_tag(bytes: &[u8]) -> Result<(), ParseError> {
+fn validate_tag(bytes: &[u8]) -> Result<(), ParseError> {
     if bytes.len() < HEADER_SIZE {
         return Err(ParseError::ShortHeader);
     }
     let raw = u16::from_be_bytes(bytes[..2].try_into().expect("slice length checked"));
     match TpmSt::try_from(raw) {
         Ok(TpmSt::NoSessions | TpmSt::Sessions) => Ok(()),
-        _ => Err(ParseError::InvalidCommandTag(raw)),
+        _ => Err(ParseError::InvalidTag(raw)),
     }
 }
 
@@ -279,7 +285,7 @@ mod tests {
         invalid_tag[..2].copy_from_slice(&0x1234u16.to_be_bytes());
         assert_eq!(
             Command::parse(invalid_tag, 4096),
-            Err(ParseError::InvalidCommandTag(0x1234))
+            Err(ParseError::InvalidTag(0x1234))
         );
 
         let mut wrong_size = command(0x17b, &[]);
@@ -290,6 +296,26 @@ mod tests {
                 declared: 11,
                 actual: 10,
             })
+        );
+    }
+
+    #[test]
+    fn responses_keep_codes_the_tcg_doesnt_define() {
+        // TPM_RC_COMMAND_CODE in the resource-manager layer, as the kernel
+        // answers for a command the TPM lacks, and a vendor-defined code.
+        for code in [0x000b_0143, 0x0000_0520] {
+            let response = Response::parse(Response::error(code).into_bytes(), 4096).unwrap();
+            assert_eq!(response.code(), code);
+        }
+    }
+
+    #[test]
+    fn rejects_responses_with_an_invalid_tag() {
+        let mut bytes = Response::error(0).into_bytes();
+        bytes[..2].copy_from_slice(&0x1234u16.to_be_bytes());
+        assert_eq!(
+            Response::parse(bytes, 4096),
+            Err(ParseError::InvalidTag(0x1234))
         );
     }
 
