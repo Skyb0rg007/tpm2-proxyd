@@ -30,12 +30,13 @@
 use std::{collections::HashMap, fmt, fs, io, path::Path, sync::Arc};
 
 use serde::Deserialize;
+use tpm2_protocol::data::{TPM_RC_P_BIT, TpmRcBase};
 
 use crate::{
     peer::Peer,
     profile::{Profile, Refusal},
     scheduler::Priority,
-    tpm::Command,
+    tpm::{Command, resmgr_rc},
 };
 
 /// Peer selector.
@@ -121,28 +122,20 @@ pub enum Denial {
 }
 
 impl Denial {
-    /// The response code the client gets for this denial.
-    ///
-    /// It's a TPM-format code in the resource-manager layer
-    /// (`TSS2_RESMGR_RC_LAYER`), which tpm2-tss decodes as a TPM error the
-    /// resource manager reported: `TPM_RC_COMMAND_CODE` for a command the peer
-    /// may not run, `TPM_RC_HANDLE` with the handle's position for a handle it
-    /// may not use.
+    /// The response code the client gets for this denial, in the
+    /// resource-manager layer (see [`resmgr_rc`]): `TPM_RC_COMMAND_CODE` for a
+    /// command the peer may not run, `TPM_RC_HANDLE` with the handle's position
+    /// for a handle it may not use.
     pub fn response_code(&self) -> u32 {
-        const RESMGR_LAYER: u32 = 11 << 16;
-        const TPM_RC_COMMAND_CODE: u32 = 0x143;
-        const TPM_RC_HANDLE: u32 = 0x08b;
-        const TPM_RC_P: u32 = 0x040;
-        RESMGR_LAYER
-            | match self {
-                Self::Refused {
-                    refusal: Refusal::Handle { position, .. },
-                    ..
-                } => TPM_RC_HANDLE | ((*position as u32) << 8),
-                // FlushContext's handle is its first parameter.
-                Self::NotOwnSession { .. } => TPM_RC_HANDLE | TPM_RC_P | (1 << 8),
-                _ => TPM_RC_COMMAND_CODE,
-            }
+        match self {
+            Self::Refused {
+                refusal: Refusal::Handle { position, .. },
+                ..
+            } => resmgr_rc(TpmRcBase::Handle) | ((*position as u32) << 8),
+            // FlushContext's handle is its first parameter.
+            Self::NotOwnSession { .. } => resmgr_rc(TpmRcBase::Handle) | TPM_RC_P_BIT | (1 << 8),
+            _ => resmgr_rc(TpmRcBase::CommandCode),
+        }
     }
 }
 

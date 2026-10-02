@@ -27,7 +27,7 @@ use std::time::Duration;
 use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt};
 use tokio::net::{TcpStream, UnixStream};
 
-use crate::tpm::{self, Command, HEADER_SIZE, Response};
+use crate::tpm::{self, Command, Response};
 use crate::upstream::{SessionId, Upstream, UpstreamError};
 
 /// swtpm control command: initialize the TPM (`CMD_INIT`).
@@ -173,18 +173,10 @@ async fn exchange<S: AsyncRead + AsyncWrite + Unpin + ?Sized>(
 ) -> Result<Vec<u8>, SwtpmError> {
     data.write_all(command).await.map_err(SwtpmError::Io)?;
     data.flush().await.map_err(SwtpmError::Io)?;
-
-    let mut header = [0u8; HEADER_SIZE];
-    data.read_exact(&mut header).await.map_err(SwtpmError::Io)?;
-    let size =
-        tpm::packet_size_from_header(&header, max_response_size).map_err(SwtpmError::Malformed)?;
-
-    let mut bytes = vec![0u8; size];
-    bytes[..HEADER_SIZE].copy_from_slice(&header);
-    data.read_exact(&mut bytes[HEADER_SIZE..])
+    tpm::read_frame(data, max_response_size)
         .await
-        .map_err(SwtpmError::Io)?;
-    Ok(bytes)
+        .map_err(SwtpmError::Io)?
+        .ok_or_else(|| SwtpmError::Io(std::io::ErrorKind::UnexpectedEof.into()))
 }
 
 /// Send `TPM2_Startup(SU_CLEAR)` to bring a freshly initialized TPM up.
@@ -246,9 +238,6 @@ pub enum SwtpmError {
     /// A swtpm socket I/O operation failed.
     #[error("swtpm socket I/O failed: {0}")]
     Io(#[source] std::io::Error),
-    /// swtpm returned a malformed response header.
-    #[error("swtpm returned a malformed response: {0}")]
-    Malformed(#[source] crate::tpm::ParseError),
     /// `TPM2_Startup` after `CMD_INIT` returned a TPM error code.
     #[error("swtpm TPM2_Startup failed with code {code:#x}")]
     Startup {
@@ -297,15 +286,8 @@ mod tests {
     fn serve_data(listener: UnixListener) {
         tokio::spawn(async move {
             let (mut stream, _) = listener.accept().await.unwrap();
-            loop {
-                let mut header = [0u8; HEADER_SIZE];
-                if stream.read_exact(&mut header).await.is_err() {
-                    return;
-                }
-                let size = u32::from_be_bytes(header[2..6].try_into().unwrap()) as usize;
-                let mut body = vec![0u8; size - HEADER_SIZE];
-                stream.read_exact(&mut body).await.unwrap();
-                let code = u32::from_be_bytes(header[6..10].try_into().unwrap());
+            while let Ok(Some(command)) = tpm::read_frame(&mut stream, 4096).await {
+                let code = u32::from_be_bytes(command[6..10].try_into().unwrap());
                 stream.write_all(&echo_response(code)).await.unwrap();
             }
         });

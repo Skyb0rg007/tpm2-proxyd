@@ -24,7 +24,7 @@ use crate::server::connection::{HELLO_TIMEOUT, serve_listener};
 use crate::server::registry::ConnectionRegistry;
 use crate::server::unix::RawTpmListener;
 use crate::testing::{FakeUpstream, broker, command_bytes, echo_response, error_response};
-use crate::tpm::{DEFAULT_MAX_PACKET_SIZE, HEADER_SIZE};
+use crate::tpm::{DEFAULT_MAX_PACKET_SIZE, read_frame};
 
 const GET_RANDOM: u32 = 0x17b;
 const GET_TEST_RESULT: u32 = 0x17c;
@@ -93,13 +93,10 @@ async fn assert_closed(stream: &mut UnixStream) {
 /// Send `code` and return the response.
 async fn transact(stream: &mut UnixStream, code: u32) -> Vec<u8> {
     stream.write_all(&command_bytes(code, &[])).await.unwrap();
-    let mut header = [0u8; HEADER_SIZE];
-    stream.read_exact(&mut header).await.unwrap();
-    let size = u32::from_be_bytes(header[2..6].try_into().unwrap()) as usize;
-    let mut packet = vec![0u8; size];
-    packet[..HEADER_SIZE].copy_from_slice(&header);
-    stream.read_exact(&mut packet[HEADER_SIZE..]).await.unwrap();
-    packet
+    read_frame(stream, DEFAULT_MAX_PACKET_SIZE)
+        .await
+        .unwrap()
+        .unwrap()
 }
 
 /// Policy allowing only `GetRandom` and `GetTestResult` for any peer, at

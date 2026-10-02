@@ -9,14 +9,12 @@
 //! command/response code. This module validates that header before a packet is
 //! admitted to the scheduler or returned to a client.
 
-#![allow(dead_code)] // Wired into main once daemon construction is implemented.
-
 use std::io;
 
 use tokio::io::{AsyncRead, AsyncReadExt};
 use tpm2_protocol::{
     TpmError,
-    data::{TpmCc, TpmSt},
+    data::{TpmCc, TpmRcBase, TpmSt},
     frame::TpmCommand as WireCommand,
 };
 
@@ -25,6 +23,14 @@ pub const HEADER_SIZE: usize = 10;
 
 /// Conservative default bound for packets accepted from either direction.
 pub const DEFAULT_MAX_PACKET_SIZE: usize = 1024 * 1024;
+
+/// A response code the proxy answers with itself rather than forwarding the
+/// command: the TPM-format code `base` in the resource-manager layer
+/// (`TSS2_RESMGR_RC_LAYER`), which tpm2-tss decodes as a TPM error the
+/// resource manager reported.
+pub const fn resmgr_rc(base: TpmRcBase) -> u32 {
+    (11 << 16) | base.value()
+}
 
 /// Validated TPM command bytes, their parsed command code, and the handles in
 /// their handle area.
@@ -46,14 +52,7 @@ impl Command {
     /// vocabulary is intentional; see `docs/design.md` ("Recognized commands
     /// only").
     pub fn parse(bytes: Vec<u8>, max_size: usize) -> Result<Self, ParseError> {
-        let size = parse_packet_size(&bytes, max_size)?;
-        if size as usize != bytes.len() {
-            return Err(ParseError::SizeMismatch {
-                declared: size,
-                actual: bytes.len(),
-            });
-        }
-        validate_tag(&bytes)?;
+        validate_frame(&bytes, max_size)?;
         let frame = WireCommand::cast(&bytes)?;
         let code = frame.cc()?;
         let handles = frame
@@ -81,15 +80,19 @@ impl Command {
         &self.handles
     }
 
-    /// The handle `TPM2_FlushContext` would flush (its first parameter), or
-    /// `None` for any other command.
-    pub fn flush_handle(&self) -> Option<u32> {
-        if self.code != TpmCc::FlushContext {
-            return None;
-        }
+    /// The four bytes after the handle area, as a big-endian `u32`.
+    fn after_handles(&self) -> Option<u32> {
         let start = HEADER_SIZE + 4 * self.handles.len();
         let bytes = self.bytes.get(start..start + 4)?;
         Some(u32::from_be_bytes(bytes.try_into().expect("four bytes")))
+    }
+
+    /// The handle `TPM2_FlushContext` would flush (its first parameter), or
+    /// `None` for any other command.
+    pub fn flush_handle(&self) -> Option<u32> {
+        (self.code == TpmCc::FlushContext)
+            .then(|| self.after_handles())
+            .flatten()
     }
 
     /// The sessions in the authorization area, each with whether the command
@@ -100,16 +103,14 @@ impl Command {
         if self.bytes[..2] != TpmSt::Sessions.value().to_be_bytes() {
             return sessions;
         }
-        let start = HEADER_SIZE + 4 * self.handles.len();
-        let mut rest = match self.bytes.get(start..start + 4) {
-            Some(size) => {
-                let size = u32::from_be_bytes(size.try_into().expect("four bytes")) as usize;
-                self.bytes
-                    .get(start + 4..start + 4 + size)
-                    .unwrap_or_default()
-            }
-            None => return sessions,
+        let Some(size) = self.after_handles() else {
+            return sessions;
         };
+        let start = HEADER_SIZE + 4 * self.handles.len() + 4;
+        let mut rest = self
+            .bytes
+            .get(start..start + size as usize)
+            .unwrap_or_default();
         // TPMS_AUTH_COMMAND: handle, nonce (TPM2B), attributes, hmac (TPM2B).
         let sized = |bytes: &[u8]| -> Option<usize> {
             let size = u16::from_be_bytes(bytes.get(..2)?.try_into().ok()?) as usize;
@@ -130,11 +131,6 @@ impl Command {
             rest = &rest[5 + nonce + hmac..];
         }
         sessions
-    }
-
-    /// Return whether this packet carries `code`.
-    pub fn is_code(&self, code: TpmCc) -> bool {
-        self.code == code
     }
 
     /// Complete encoded command.
@@ -166,14 +162,7 @@ impl Response {
     /// TPM lacks), and TPMs may return vendor codes; either way the client
     /// gets the response unchanged.
     pub fn parse(bytes: Vec<u8>, max_size: usize) -> Result<Self, ParseError> {
-        let size = parse_packet_size(&bytes, max_size)?;
-        if size as usize != bytes.len() {
-            return Err(ParseError::SizeMismatch {
-                declared: size,
-                actual: bytes.len(),
-            });
-        }
-        validate_tag(&bytes)?;
+        validate_frame(&bytes, max_size)?;
         Ok(Self(bytes))
     }
 
@@ -194,16 +183,6 @@ impl Response {
     pub fn as_bytes(&self) -> &[u8] {
         &self.0
     }
-
-    /// Consume the response and return its encoded bytes.
-    pub fn into_bytes(self) -> Vec<u8> {
-        self.0
-    }
-}
-
-/// Read the packet size declared by a TPM header.
-pub fn packet_size_from_header(header: &[u8], max_size: usize) -> Result<usize, ParseError> {
-    parse_packet_size(header, max_size).map(|size| size as usize)
 }
 
 /// TPM packet validation failure.
@@ -239,6 +218,27 @@ pub enum ParseError {
     Protocol(#[from] TpmError),
 }
 
+/// Read one self-framed TPM packet (a command or a response) from `stream`,
+/// checking only its declared size.
+///
+/// `Ok(None)` is returned only when the stream reaches EOF between packets.
+pub async fn read_frame(
+    stream: &mut (impl AsyncRead + Unpin + ?Sized),
+    max_size: usize,
+) -> io::Result<Option<Vec<u8>>> {
+    let mut header = [0u8; HEADER_SIZE];
+    if stream.read(&mut header[..1]).await? == 0 {
+        return Ok(None);
+    }
+    stream.read_exact(&mut header[1..]).await?;
+
+    let size = declared_size(&header, max_size).map_err(invalid_data)?;
+    let mut bytes = vec![0u8; size as usize];
+    bytes[..HEADER_SIZE].copy_from_slice(&header);
+    stream.read_exact(&mut bytes[HEADER_SIZE..]).await?;
+    Ok(Some(bytes))
+}
+
 /// Read and validate one command from an async byte stream.
 ///
 /// `Ok(None)` is returned only when the stream reaches EOF between commands.
@@ -246,44 +246,20 @@ pub async fn read_command(
     stream: &mut (impl AsyncRead + Unpin),
     max_size: usize,
 ) -> io::Result<Option<Command>> {
-    let mut header = [0u8; HEADER_SIZE];
-    let read = stream.read(&mut header[..1]).await?;
-    if read == 0 {
+    let Some(bytes) = read_frame(stream, max_size).await? else {
         return Ok(None);
-    }
-    stream.read_exact(&mut header[1..]).await?;
-
-    let size = parse_packet_size(&header, max_size).map_err(invalid_data)?;
-    let mut bytes = vec![0u8; size as usize];
-    bytes[..HEADER_SIZE].copy_from_slice(&header);
-    stream.read_exact(&mut bytes[HEADER_SIZE..]).await?;
-
+    };
     Command::parse(bytes, max_size)
         .map(Some)
         .map_err(invalid_data)
 }
 
-fn parse_packet_size(bytes: &[u8], max_size: usize) -> Result<u32, ParseError> {
+/// The size a TPM header declares, if it's within bounds.
+fn declared_size(bytes: &[u8], max_size: usize) -> Result<u32, ParseError> {
     if bytes.len() < HEADER_SIZE {
         return Err(ParseError::ShortHeader);
     }
     let size = u32::from_be_bytes(bytes[2..6].try_into().expect("slice length checked"));
-    validate_packet_size(size, max_size)?;
-    Ok(size)
-}
-
-fn validate_tag(bytes: &[u8]) -> Result<(), ParseError> {
-    if bytes.len() < HEADER_SIZE {
-        return Err(ParseError::ShortHeader);
-    }
-    let raw = u16::from_be_bytes(bytes[..2].try_into().expect("slice length checked"));
-    match TpmSt::try_from(raw) {
-        Ok(TpmSt::NoSessions | TpmSt::Sessions) => Ok(()),
-        _ => Err(ParseError::InvalidTag(raw)),
-    }
-}
-
-fn validate_packet_size(size: u32, max_size: usize) -> Result<(), ParseError> {
     if size < HEADER_SIZE as u32 {
         return Err(ParseError::InvalidSize(size));
     }
@@ -293,7 +269,23 @@ fn validate_packet_size(size: u32, max_size: usize) -> Result<(), ParseError> {
             max: max_size,
         });
     }
-    Ok(())
+    Ok(size)
+}
+
+/// Check a complete packet's size and tag.
+fn validate_frame(bytes: &[u8], max_size: usize) -> Result<(), ParseError> {
+    let size = declared_size(bytes, max_size)?;
+    if size as usize != bytes.len() {
+        return Err(ParseError::SizeMismatch {
+            declared: size,
+            actual: bytes.len(),
+        });
+    }
+    let tag = u16::from_be_bytes(bytes[..2].try_into().expect("slice length checked"));
+    match TpmSt::try_from(tag) {
+        Ok(TpmSt::NoSessions | TpmSt::Sessions) => Ok(()),
+        _ => Err(ParseError::InvalidTag(tag)),
+    }
 }
 
 fn invalid_data(error: ParseError) -> io::Error {

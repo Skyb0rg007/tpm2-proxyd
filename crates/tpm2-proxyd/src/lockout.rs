@@ -50,11 +50,6 @@ pub const DEFAULT_UID_LIMIT: u64 = 5;
 /// Default time for each count to forget one failure.
 pub const DEFAULT_RECOVERY_INTERVAL: Duration = Duration::from_secs(600);
 
-/// Response code for a command from a locked-out UID: `TPM_RC_LOCKOUT` in the
-/// resource-manager layer, which tpm2-tss decodes as the TPM being in DA
-/// lockout mode.
-pub const RC_LOCKED_OUT: u32 = (11 << 16) | 0x921;
-
 /// Whether `code` is a TPM response code that counted toward the lockout.
 pub fn is_auth_failure(code: u32) -> bool {
     TpmRc::try_from(code).is_ok_and(|rc| rc.base() == TpmRcBase::AuthFail)

@@ -15,10 +15,10 @@ use std::{future::Future, io, time::Duration};
 use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt};
 use tokio::sync::watch;
 use tokio::task::JoinSet;
+use tpm2_protocol::data::TpmRcBase;
 
 use crate::{
     broker::{Broker, BrokerError, Client},
-    lockout,
     log_limit::{Kind, limited},
     peer::Peer,
     scheduler::Priority,
@@ -26,7 +26,7 @@ use crate::{
         hello::{self, Hello, HelloStatus},
         registry::ConnectionRegistry,
     },
-    tpm::{self, Command, Response},
+    tpm::{self, Command, Response, resmgr_rc},
 };
 
 /// How long shutdown waits for in-flight connections to drain before aborting.
@@ -383,7 +383,7 @@ where
                                 Response::error(denial.response_code())
                             }
                             Err(BrokerError::LockedOut { .. }) => {
-                                Response::error(lockout::RC_LOCKED_OUT)
+                                Response::error(resmgr_rc(TpmRcBase::Lockout))
                             }
                             Err(error) => return Err(error.into()),
                         };
@@ -419,20 +419,10 @@ mod tests {
     use crate::{
         policy::Policy,
         testing::{FakeUpstream, broker, command_bytes, error_response},
-        tpm::{DEFAULT_MAX_PACKET_SIZE, HEADER_SIZE},
+        tpm::{DEFAULT_MAX_PACKET_SIZE, read_frame},
     };
 
     use super::*;
-
-    async fn read_packet(stream: &mut DuplexStream) -> Vec<u8> {
-        let mut header = [0; HEADER_SIZE];
-        stream.read_exact(&mut header).await.unwrap();
-        let size = u32::from_be_bytes(header[2..6].try_into().unwrap()) as usize;
-        let mut packet = vec![0; size];
-        packet[..HEADER_SIZE].copy_from_slice(&header);
-        stream.read_exact(&mut packet[HEADER_SIZE..]).await.unwrap();
-        packet
-    }
 
     #[tokio::test]
     async fn denied_command_gets_an_error_response_and_is_not_forwarded() {
@@ -452,7 +442,8 @@ mod tests {
         // Each denial is answered, and the connection stays open.
         for code in [0x17b, 0x17a] {
             stream.write_all(&command_bytes(code, &[])).await.unwrap();
-            assert_eq!(read_packet(&mut stream).await, error_response(0x000b_0143));
+            let response = read_frame(&mut stream, DEFAULT_MAX_PACKET_SIZE).await;
+            assert_eq!(response.unwrap().unwrap(), error_response(0x000b_0143));
         }
         stream.shutdown().await.unwrap();
 

@@ -40,15 +40,12 @@ use std::{
 
 use tokio::sync::oneshot;
 use tpm2_device::{TpmDeviceError, TpmPosixDevice, TpmTransport};
+use tpm2_protocol::data::TpmRcBase;
 
-use crate::tpm::{Command, Response};
+use crate::tpm::{Command, Response, resmgr_rc};
 
 /// The largest command the kernel accepts on `/dev/tpmrm0` (`TPM_BUFSIZE`).
-pub const DEVICE_MAX_COMMAND_SIZE: usize = 4096;
-
-/// `TPM_RC_COMMAND_SIZE` in the resource-manager layer, the answer to a
-/// command too large for the kernel.
-pub const RC_COMMAND_TOO_LARGE: u32 = (11 << 16) | 0x142;
+const DEVICE_MAX_COMMAND_SIZE: usize = 4096;
 
 /// Identifies one downstream client's upstream session.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
@@ -155,7 +152,7 @@ impl Upstream for TpmDeviceUpstream {
         // The kernel would refuse the write with E2BIG, failing the session;
         // answer as a TPM would instead, and the client may carry on.
         if command.as_bytes().len() > DEVICE_MAX_COMMAND_SIZE {
-            return Ok(Response::error(RC_COMMAND_TOO_LARGE));
+            return Ok(Response::error(resmgr_rc(TpmRcBase::CommandSize)));
         }
         let (reply, response) = oneshot::channel();
         self.requests
@@ -216,8 +213,8 @@ fn run_device_worker(path: &Path, timeout: Duration, incoming: &mpsc::Receiver<D
     }
 }
 
-/// Forward `command` on `session`'s device, opening the device if needed.
-/// After a failure the caller closes the device.
+/// Forward `command` on `session`'s device, opening the device if needed, and
+/// return the raw response frame. After a failure the caller closes the device.
 fn transact(
     devices: &mut HashMap<SessionId, TpmPosixDevice>,
     path: &Path,
@@ -231,11 +228,6 @@ fn transact(
             entry.insert(open_device(path, timeout).map_err(UpstreamError::transport)?)
         }
     };
-    forward(device, command)
-}
-
-/// Forward one validated command frame and return the raw response frame.
-fn forward(device: &mut impl TpmTransport, command: &[u8]) -> Result<Vec<u8>, UpstreamError> {
     let mut response = Vec::new();
     device
         .send(command)
