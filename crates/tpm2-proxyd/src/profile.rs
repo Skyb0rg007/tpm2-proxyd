@@ -105,8 +105,38 @@ struct ProfileFile {
     commands: Vec<String>,
     #[serde(default)]
     handles: Vec<String>,
-    #[serde(default)]
-    command_handles: HashMap<String, Vec<String>>,
+    #[serde(default, deserialize_with = "object_entries")]
+    command_handles: Vec<(String, Vec<String>)>,
+}
+
+/// A JSON object's entries in order, repeated keys included, so they can be
+/// refused: a map would silently keep only the last of them.
+fn object_entries<'de, D>(deserializer: D) -> Result<Vec<(String, Vec<String>)>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    struct Entries;
+
+    impl<'de> serde::de::Visitor<'de> for Entries {
+        type Value = Vec<(String, Vec<String>)>;
+
+        fn expecting(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+            f.write_str("an object mapping command names to handle lists")
+        }
+
+        fn visit_map<A>(self, mut map: A) -> Result<Self::Value, A::Error>
+        where
+            A: serde::de::MapAccess<'de>,
+        {
+            let mut entries = Vec::new();
+            while let Some(entry) = map.next_entry()? {
+                entries.push(entry);
+            }
+            Ok(entries)
+        }
+    }
+
+    deserializer.deserialize_map(Entries)
 }
 
 impl Profile {
@@ -156,7 +186,14 @@ impl Profile {
                     "command_handles names {command}, which isn't in commands"
                 ));
             }
-            command_handles.insert(code, Handles::parse(handles)?);
+            // Names are case-insensitive, so this also catches two spellings of
+            // the same command.
+            if command_handles
+                .insert(code, Handles::parse(handles)?)
+                .is_some()
+            {
+                return Err(format!("command_handles lists {command} twice"));
+            }
         }
 
         Ok(Self {
@@ -358,6 +395,16 @@ mod tests {
             (
                 "override for an unlisted command",
                 r#"{"commands": [], "command_handles": {"TPM_CC_GetRandom": []}}"#,
+            ),
+            (
+                "duplicate command_handles key",
+                r#"{"commands": ["TPM_CC_ReadPublic"], "command_handles": {
+                    "TPM_CC_ReadPublic": [], "TPM_CC_ReadPublic": ["*"]}}"#,
+            ),
+            (
+                "command_handles keys differing only in case",
+                r#"{"commands": ["TPM_CC_ReadPublic"], "command_handles": {
+                    "TPM_CC_ReadPublic": [], "tpm_cc_readpublic": ["*"]}}"#,
             ),
             ("unknown field", r#"{"commands": [], "priority": 1}"#),
             ("missing commands", r#"{"handles": []}"#),
