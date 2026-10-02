@@ -165,7 +165,6 @@ const STATE_FINAL: u32 = 2;
 struct ProxyContext {
     common: TctiContextCommonV2,
     state: u32,
-    locality: u8,
     /// Connected Unix socket fd, or -1 once finalized.
     fd: RawFd,
     /// The response being received. It fills up across `receive` calls, so
@@ -177,6 +176,29 @@ struct ProxyContext {
 }
 
 impl ProxyContext {
+    /// A context in the transmit state, connected to the daemon over `fd`.
+    fn new(fd: RawFd) -> Self {
+        Self {
+            common: TctiContextCommonV2 {
+                v1: TctiContextCommonV1 {
+                    magic: PROXY_MAGIC,
+                    version: TCTI_VERSION,
+                    transmit: tcti_proxy_transmit,
+                    receive: tcti_proxy_receive,
+                    finalize: tcti_proxy_finalize,
+                    cancel: tcti_proxy_cancel,
+                    get_poll_handles: tcti_proxy_get_poll_handles,
+                    set_locality: tcti_proxy_set_locality,
+                },
+                make_sticky: tcti_proxy_make_sticky,
+            },
+            state: STATE_TRANSMIT,
+            fd,
+            response: [0; MAX_RESP_SIZE],
+            received: 0,
+        }
+    }
+
     /// Drop any partial response and go back to accepting commands.
     fn reset_receive(&mut self) {
         self.received = 0;
@@ -220,9 +242,9 @@ unsafe fn context_from_ptr<'a>(ctx: *mut TctiContext) -> Option<&'a mut ProxyCon
     Some(ctx)
 }
 
-/// Borrow the context's socket without taking ownership of the fd.
-fn borrow_stream(ctx: &ProxyContext) -> ManuallyDrop<UnixStream> {
-    ManuallyDrop::new(unsafe { UnixStream::from_raw_fd(ctx.fd) })
+/// Borrow a context's socket without taking ownership of the fd.
+fn borrow_stream(fd: RawFd) -> ManuallyDrop<UnixStream> {
+    ManuallyDrop::new(unsafe { UnixStream::from_raw_fd(fd) })
 }
 
 /// Two-phase init: with `ctx == NULL` it reports the required context size;
@@ -267,29 +289,7 @@ unsafe extern "C" fn tcti_proxy_init(
     }
 
     // Initialize the context in place; the buffer is owned by the caller.
-    let slot = ctx as *mut ProxyContext;
-    unsafe {
-        slot.write(ProxyContext {
-            common: TctiContextCommonV2 {
-                v1: TctiContextCommonV1 {
-                    magic: PROXY_MAGIC,
-                    version: TCTI_VERSION,
-                    transmit: tcti_proxy_transmit,
-                    receive: tcti_proxy_receive,
-                    finalize: tcti_proxy_finalize,
-                    cancel: tcti_proxy_cancel,
-                    get_poll_handles: tcti_proxy_get_poll_handles,
-                    set_locality: tcti_proxy_set_locality,
-                },
-                make_sticky: tcti_proxy_make_sticky,
-            },
-            state: STATE_TRANSMIT,
-            locality: 0,
-            fd: stream.into_raw_fd(),
-            response: [0; MAX_RESP_SIZE],
-            received: 0,
-        });
-    }
+    unsafe { (ctx as *mut ProxyContext).write(ProxyContext::new(stream.into_raw_fd())) };
     TSS2_RC_SUCCESS
 }
 
@@ -395,7 +395,7 @@ unsafe extern "C" fn tcti_proxy_transmit(
     if frame_size(command) != size {
         return TSS2_TCTI_RC_BAD_VALUE;
     }
-    let mut stream = borrow_stream(ctx);
+    let mut stream = borrow_stream(ctx.fd);
     match stream.write_all(command).and_then(|()| stream.flush()) {
         Ok(()) => {
             ctx.state = STATE_RECEIVE;
@@ -451,12 +451,8 @@ unsafe extern "C" fn tcti_proxy_receive(
         unsafe { *size = total };
         return TSS2_TCTI_RC_INSUFFICIENT_BUFFER;
     }
-    let Some(buffered) = ctx.response.get(..total) else {
-        ctx.reset_receive();
-        return TSS2_TCTI_RC_GENERAL_FAILURE;
-    };
     unsafe {
-        std::ptr::copy_nonoverlapping(buffered.as_ptr(), response, total);
+        std::ptr::copy_nonoverlapping(ctx.response.as_ptr(), response, total);
         *size = total;
     }
     ctx.reset_receive();
@@ -499,12 +495,9 @@ fn read_response(ctx: &mut ProxyContext, timeout: i32) -> Result<usize, Tss2Rc> 
                 return Err(TSS2_TCTI_RC_IO_ERROR);
             }
         }
-        let mut stream = borrow_stream(ctx);
-        let Some(unread) = ctx.response.get_mut(ctx.received..wanted) else {
-            ctx.reset_receive();
-            return Err(TSS2_TCTI_RC_GENERAL_FAILURE);
-        };
-        match stream.read(unread) {
+        // `received < wanted <= MAX_RESP_SIZE`: the header's size is checked above.
+        let unread = &mut ctx.response[ctx.received..wanted];
+        match borrow_stream(ctx.fd).read(unread) {
             Ok(0) => {
                 ctx.reset_receive();
                 return Err(TSS2_TCTI_RC_NO_CONNECTION);
@@ -611,15 +604,15 @@ unsafe extern "C" fn tcti_proxy_get_poll_handles(
 }
 
 /// # Safety
-/// Driven by the TCTI ABI.
-unsafe extern "C" fn tcti_proxy_set_locality(ctx: *mut TctiContext, locality: u8) -> Tss2Rc {
+/// Driven by the TCTI ABI. The kernel resource manager has no notion of
+/// locality to forward, so this only checks the call is in sequence.
+unsafe extern "C" fn tcti_proxy_set_locality(ctx: *mut TctiContext, _locality: u8) -> Tss2Rc {
     let Some(ctx) = (unsafe { context_from_ptr(ctx) }) else {
         return TSS2_TCTI_RC_BAD_CONTEXT;
     };
     if ctx.state != STATE_TRANSMIT {
         return TSS2_TCTI_RC_BAD_SEQUENCE;
     }
-    ctx.locality = locality;
     TSS2_RC_SUCCESS
 }
 
@@ -782,27 +775,7 @@ mod tests {
     /// the daemon, as `init` leaves it after the hello.
     fn connected_context() -> (Box<ProxyContext>, UnixStream) {
         let (client, server) = UnixStream::pair().unwrap();
-        let ctx = Box::new(ProxyContext {
-            common: TctiContextCommonV2 {
-                v1: TctiContextCommonV1 {
-                    magic: PROXY_MAGIC,
-                    version: TCTI_VERSION,
-                    transmit: tcti_proxy_transmit,
-                    receive: tcti_proxy_receive,
-                    finalize: tcti_proxy_finalize,
-                    cancel: tcti_proxy_cancel,
-                    get_poll_handles: tcti_proxy_get_poll_handles,
-                    set_locality: tcti_proxy_set_locality,
-                },
-                make_sticky: tcti_proxy_make_sticky,
-            },
-            state: STATE_TRANSMIT,
-            locality: 0,
-            fd: client.into_raw_fd(),
-            response: [0; MAX_RESP_SIZE],
-            received: 0,
-        });
-        (ctx, server)
+        (Box::new(ProxyContext::new(client.into_raw_fd())), server)
     }
 
     fn ptr(ctx: &mut ProxyContext) -> *mut TctiContext {
