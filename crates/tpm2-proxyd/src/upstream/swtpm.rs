@@ -24,7 +24,6 @@
 use std::path::PathBuf;
 use std::time::Duration;
 
-use async_trait::async_trait;
 use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt};
 use tokio::net::{TcpStream, UnixStream};
 
@@ -128,7 +127,6 @@ impl SwtpmUpstream {
     }
 }
 
-#[async_trait]
 impl Upstream for SwtpmUpstream {
     async fn transact(
         &mut self,

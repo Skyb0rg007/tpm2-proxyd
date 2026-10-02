@@ -31,13 +31,13 @@ pub mod swtpm;
 use std::{
     collections::{HashMap, hash_map::Entry},
     error::Error,
+    future::Future,
     path::Path,
     sync::mpsc,
     thread,
     time::Duration,
 };
 
-use async_trait::async_trait;
 use tokio::sync::oneshot;
 use tpm2_device::{TpmDeviceError, TpmPosixDevice, TpmTransport};
 
@@ -75,22 +75,23 @@ impl UpstreamError {
 }
 
 /// A TPM transport capable of one complete command/response transaction.
-#[async_trait]
 pub trait Upstream: Send + 'static {
     /// Send `command` on behalf of `session` and wait for its response.
     ///
     /// The first command of a session opens whatever upstream state the
     /// session needs.
-    async fn transact(
+    fn transact(
         &mut self,
         session: SessionId,
         command: &Command,
-    ) -> Result<Response, UpstreamError>;
+    ) -> impl Future<Output = Result<Response, UpstreamError>> + Send;
 
     /// Release `session`'s upstream state; its client has disconnected.
     ///
     /// The default does nothing, for upstreams that do not isolate sessions.
-    async fn close(&mut self, _session: SessionId) {}
+    fn close(&mut self, _session: SessionId) -> impl Future<Output = ()> + Send {
+        async {}
+    }
 }
 
 /// Upstream transport backed by per-session `tpm2-device` [`TpmPosixDevice`]s
@@ -145,7 +146,6 @@ impl TpmDeviceUpstream {
     }
 }
 
-#[async_trait]
 impl Upstream for TpmDeviceUpstream {
     async fn transact(
         &mut self,

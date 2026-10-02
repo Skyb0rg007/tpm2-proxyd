@@ -63,7 +63,6 @@ const BUSY: u16 = 2;
 /// succeeds with a response echoing the command code into its body.
 struct FakeTpm;
 
-#[async_trait::async_trait]
 impl Upstream for FakeTpm {
     async fn transact(
         &mut self,

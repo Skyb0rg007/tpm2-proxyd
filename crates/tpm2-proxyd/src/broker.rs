@@ -308,7 +308,6 @@ mod tests {
         codes: Arc<Mutex<Vec<u32>>>,
     }
 
-    #[async_trait::async_trait]
     impl Upstream for CountingUpstream {
         async fn transact(
             &mut self,
@@ -409,7 +408,6 @@ mod tests {
     /// Answers every command with `TPM_RC_AUTH_FAIL` for session 1.
     struct AuthFailUpstream;
 
-    #[async_trait::async_trait]
     impl Upstream for AuthFailUpstream {
         async fn transact(
             &mut self,
@@ -497,7 +495,6 @@ mod tests {
     /// Answers every command with `TPM_RC_BAD_AUTH` for session 1.
     struct BadAuthUpstream;
 
-    #[async_trait::async_trait]
     impl Upstream for BadAuthUpstream {
         async fn transact(
             &mut self,
@@ -555,7 +552,6 @@ mod tests {
         count: Arc<AtomicUsize>,
     }
 
-    #[async_trait::async_trait]
     impl Upstream for SlowAuthFailUpstream {
         async fn transact(
             &mut self,

@@ -330,7 +330,6 @@ mod tests {
         }
     }
 
-    #[async_trait::async_trait]
     impl Upstream for RecordingUpstream {
         async fn transact(
             &mut self,

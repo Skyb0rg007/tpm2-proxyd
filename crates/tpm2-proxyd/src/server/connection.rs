@@ -431,7 +431,6 @@ mod tests {
         commands: Arc<Mutex<Vec<u32>>>,
     }
 
-    #[async_trait::async_trait]
     impl Upstream for EchoUpstream {
         async fn transact(
             &mut self,
