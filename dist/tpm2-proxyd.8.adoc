@@ -78,7 +78,11 @@ passed straight through to an already-started swtpm.
 Maximum accepted TPM command or response size.
 
 *--queue-depth*=_COUNT_::
-Maximum number of commands queued for the upstream worker.
+Size of the buffer between connections and the upstream worker. The worker
+moves commands from it into its priority queue as they arrive, even while the
+TPM is busy, so it only absorbs bursts. The priority queue itself holds at most
+one command per connection, since each connection waits for its response before
+sending another, so *--max-connections* is what bounds it.
 
 *--max-connections*=_COUNT_::
 Maximum concurrent downstream connections. The default is 1024; a value of 0

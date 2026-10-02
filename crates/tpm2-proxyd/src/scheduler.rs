@@ -49,8 +49,10 @@ pub struct CommandScheduler {
 impl CommandScheduler {
     /// Start the single, non-preemptive upstream worker.
     ///
-    /// `queue_capacity` bounds commands waiting to enter the scheduler. The
-    /// worker owns `upstream`, so no second transaction can overlap it.
+    /// `queue_capacity` bounds commands waiting to enter the scheduler; the
+    /// worker moves them into its priority queue as they arrive, even during a
+    /// transaction. The worker owns `upstream`, so no second transaction can
+    /// overlap it.
     pub fn start<U>(upstream: U, queue_capacity: usize) -> Self
     where
         U: Upstream,
@@ -181,6 +183,8 @@ async fn run_command_worker<U>(
 {
     let mut queue = BinaryHeap::new();
     let mut next_sequence = 0u64;
+    // Whether any client can still submit commands.
+    let mut receiving = true;
 
     loop {
         // Release disconnected clients' upstream state before the next
@@ -190,6 +194,9 @@ async fn run_command_worker<U>(
         }
 
         if queue.is_empty() {
+            if !receiving {
+                break;
+            }
             tokio::select! {
                 Some(session) = closed.recv() => upstream.close(session).await,
                 command = receiver.recv() => match command {
@@ -218,7 +225,22 @@ async fn run_command_worker<U>(
             let _ = command.reply.send(Err(ExecuteError::Refused));
             continue;
         }
-        let result = upstream.transact(command.session, &command.command).await;
+        // Keep taking arrivals into the priority queue while the TPM works.
+        // Left in the channel, they would wait in arrival order once it
+        // filled, and a high-priority command could queue behind
+        // low-priority ones.
+        let transaction = upstream.transact(command.session, &command.command);
+        tokio::pin!(transaction);
+        let result = loop {
+            tokio::select! {
+                biased;
+                result = &mut transaction => break result,
+                arrival = receiver.recv(), if receiving => match arrival {
+                    Some(arrival) => push_command(&mut queue, arrival, &mut next_sequence),
+                    None => receiving = false,
+                },
+            }
+        };
         if let (Some(guard), Ok(response)) = (&command.guard, &result) {
             guard.completed(response);
         }
@@ -284,6 +306,10 @@ mod tests {
 
     impl Harness {
         fn start() -> Self {
+            Self::with_capacity(8)
+        }
+
+        fn with_capacity(queue_capacity: usize) -> Self {
             let events = Arc::new(Mutex::new(Vec::new()));
             let release_first = Arc::new(tokio::sync::Semaphore::new(0));
             let (started, first_started) = oneshot::channel();
@@ -293,7 +319,7 @@ mod tests {
                     first_started: Some(started),
                     release_first: release_first.clone(),
                 },
-                8,
+                queue_capacity,
             );
             Self {
                 scheduler,
@@ -394,6 +420,55 @@ mod tests {
             })
             .collect();
         assert_eq!(transacted, [0x17b, 0x17c, 0x17a]);
+    }
+
+    #[tokio::test]
+    async fn priority_holds_when_more_commands_wait_than_the_queue_capacity() {
+        let Harness {
+            scheduler,
+            events,
+            first_started: started,
+            release_first,
+        } = Harness::with_capacity(1);
+
+        let first_session = scheduler.open_session();
+        let first = tokio::spawn(async move {
+            first_session
+                .execute(Priority(0), raw_command(0x17b), None)
+                .await
+                .unwrap()
+        });
+        started.await.unwrap();
+
+        // More waiting commands than the channel holds, the high-priority one
+        // last.
+        let mut waiting = Vec::new();
+        for (priority, code) in [(0, 0x17a), (0, 0x17a), (0, 0x17a), (10, 0x17c)] {
+            let session = scheduler.open_session();
+            waiting.push(tokio::spawn(async move {
+                session
+                    .execute(Priority(priority), raw_command(code), None)
+                    .await
+                    .unwrap()
+            }));
+            let_submissions_queue().await;
+        }
+        release_first.add_permits(1);
+
+        first.await.unwrap();
+        for task in waiting {
+            task.await.unwrap();
+        }
+        let transacted: Vec<u32> = events
+            .lock()
+            .unwrap()
+            .iter()
+            .filter_map(|event| match event {
+                Event::Transact(_, code) => Some(*code),
+                Event::Close(_) => None,
+            })
+            .collect();
+        assert_eq!(transacted, [0x17b, 0x17c, 0x17a, 0x17a, 0x17a]);
     }
 
     #[tokio::test]

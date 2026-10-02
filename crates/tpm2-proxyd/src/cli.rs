@@ -75,7 +75,7 @@ pub struct Options {
         value_parser = parse_positive_usize
     )]
     pub max_packet_size: usize,
-    /// Maximum number of queued TPM commands.
+    /// Size of the buffer of TPM commands on their way to the scheduler.
     #[arg(
         long,
         require_equals = true,
