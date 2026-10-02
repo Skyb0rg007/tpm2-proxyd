@@ -109,15 +109,26 @@ tcti="$tcti_lib:$sock"
 work="$workdir/keys"
 mkdir "$work"
 
+# swtpm has no resource manager, so the transient objects each tool leaves
+# loaded stay there and fill its few object slots (Esys_Load fails with
+# TPM_RC_OBJECT_MEMORY). Flush them between tools, as the kernel resource
+# manager does when a client closes its /dev/tpmrm0 handle.
+tool() {
+  "$@" --tcti="$tcti" || return
+  if [ "$MODE" = swtpm ]; then
+    tpm2_flushcontext --tcti="$tcti" -t
+  fi
+}
+
 echo "Creating, loading, and signing with a key under the standard profile..."
 {
-  tpm2_createprimary --tcti="$tcti" -C o -c "$work/primary.ctx" &&
-    tpm2_create --tcti="$tcti" -C "$work/primary.ctx" -G ecc \
+  tool tpm2_createprimary -C o -c "$work/primary.ctx" &&
+    tool tpm2_create -C "$work/primary.ctx" -G ecc \
       -u "$work/key.pub" -r "$work/key.priv" &&
-    tpm2_load --tcti="$tcti" -C "$work/primary.ctx" \
+    tool tpm2_load -C "$work/primary.ctx" \
       -u "$work/key.pub" -r "$work/key.priv" -c "$work/key.ctx" &&
     echo "tpm2-proxyd" >"$work/message" &&
-    tpm2_sign --tcti="$tcti" -c "$work/key.ctx" -g sha256 \
+    tool tpm2_sign -c "$work/key.ctx" -g sha256 \
       -o "$work/message.sig" "$work/message"
 } >/dev/null 2>"$workdir/err" || {
   echo "FAIL: key workflow through proxy failed:" >&2
