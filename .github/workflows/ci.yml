@@ -54,3 +54,5 @@ jobs:
         run: nix build -L .#tpm2-proxyd
       - name: Application tests (NixOS VM)
         run: nix build -L .#checks.x86_64-linux.app-tests
+      - name: NixOS module (NixOS VM)
+        run: nix build -L .#checks.x86_64-linux.module

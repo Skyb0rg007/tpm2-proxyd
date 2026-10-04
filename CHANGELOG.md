@@ -46,7 +46,8 @@ kernel resource manager (`/dev/tpmrm0`).
   raises its open-file limit to fit. Client-triggered log lines are limited per
   user.
 - **Packaging**: systemd socket and service units with socket activation,
-  readiness and watchdog; a sysusers file; a man page; `dist/install.sh`.
+  readiness and watchdog; a sysusers file; a man page; `dist/install.sh`; a
+  NixOS module (`nixosModules.default`).
 
 Known limitations:
 

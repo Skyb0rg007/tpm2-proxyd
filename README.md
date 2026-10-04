@@ -88,6 +88,44 @@ directly and bypass the proxy's policy. If your distribution's TPM group is not
 `tss`, edit `SupplementaryGroups=` in the service unit (and the socket's owner)
 to match.
 
+### NixOS
+
+The flake provides a NixOS module, `nixosModules.default`:
+
+```nix
+{
+  inputs.tpm2-proxyd.url = "github:Skyb0rg007/tpm2-proxyd";
+
+  outputs = { nixpkgs, tpm2-proxyd, ... }: {
+    nixosConfigurations.machine = nixpkgs.lib.nixosSystem {
+      modules = [
+        tpm2-proxyd.nixosModules.default
+        {
+          services.tpm2-proxyd = {
+            enable = true;
+            # Point tpm2-tools, tpm2-pkcs11 and tpm2-openssl at the proxy.
+            tctiEnvironment.enable = true;
+            settings.rules = [
+              { subject.gid = 1001; profile = "admin"; max_priority = 10; }
+            ];
+            profiles.admin = ./admin.json;
+          };
+        }
+      ];
+    };
+  };
+}
+```
+
+It enables the socket, writes the policy (`settings`, the same JSON as
+`policy.json`, defaulting to everyone under `standard`) and any extra
+`profiles` under `/etc/tpm2-proxyd/`, and turns on `security.tpm2`. Changing the
+policy or a profile reloads the daemon on switch without dropping its
+connections. `extraArgs` passes further command-line options. On NixOS the
+tpm2-tss loader can't find the TCTI module by name, so clients need its full
+path: `tctiEnvironment.enable` sets the usual TCTI variables, and
+`config.services.tpm2-proxyd.tcti` holds the string for anything else.
+
 ## Configuring policy
 
 Policy has two parts, both under `/etc/tpm2-proxyd/`:

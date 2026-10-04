@@ -154,6 +154,11 @@ profiles (`profiles/`, installed to `/etc/tpm2-proxyd/profiles/`), `install.sh`,
 and `smoke-test.sh` (a live test against the host TPM that runs a key workflow
 under the `standard` profile; see `docs/smoke-test.md`).
 
+`nix/module.nix` is the NixOS module (`nixosModules.default`). It uses the
+packaged units through `systemd.packages` and only adds a drop-in, so the units
+in `dist/` stay the single source of truth; keep it that way. `nix/module-test.nix`
+(the `module` flake check) runs it in a VM.
+
 The raw socket is `tss:tss 0666`: any local user may connect, and the daemon's
 policy decides per connection. Never gate clients by the `tss` group; its
 members can open `/dev/tpmrm0` directly and bypass the policy.
@@ -247,7 +252,7 @@ e.g. `Assisted-by: claude-opus-5-5`. Don't add `Co-Authored-By:` or
 `.pre-commit-config.yaml` enforces (run `pre-commit run --all-files`); CI
 (`.github/workflows/ci.yml`) runs build, nextest, clippy, `treefmt --ci`,
 `reuse lint` and the swtpm smoke test, and in a second job `nix build` of the
-package and the `app-tests` VM check:
+package and the `app-tests` and `module` VM checks:
 - `treefmt` — multiplexes `rustfmt` (`*.rs`) and `nixfmt` (`*.nix`), configured
   in `.config/treefmt.toml`, which passes rustfmt `skip_children = true`.
   `.rustfmt.toml` sets `edition = 2024` and has to stay at the root: rustfmt

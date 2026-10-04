@@ -29,9 +29,21 @@
         }
       );
 
+      nixosModules.default =
+        { lib, pkgs, ... }:
+        {
+          imports = [ ./nix/module.nix ];
+          services.tpm2-proxyd.package =
+            lib.mkDefault
+              self.packages.${pkgs.stdenv.hostPlatform.system}.tpm2-proxyd;
+        };
+
       checks = forAllSystems (system: {
         inherit (self.packages.${system}) tpm2-proxyd;
         app-tests = (pkgsFor system).callPackage ./nix/app-tests.nix {
+          inherit (self.packages.${system}) tpm2-proxyd;
+        };
+        module = (pkgsFor system).callPackage ./nix/module-test.nix {
           inherit (self.packages.${system}) tpm2-proxyd;
         };
       });
