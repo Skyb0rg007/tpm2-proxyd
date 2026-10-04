@@ -237,7 +237,8 @@ no vendor hash to refresh when dependencies change.
 
 ## Commits and pre-commit checks
 
-Commit messages follow Conventional Commits (`.commitlintrc.mjs`).
+Commit messages follow Conventional Commits (`.config/commitlintrc.mjs`;
+commitlint doesn't look in `.config/` itself, so the hook passes `--config`).
 
 AI-assisted commits end with an `Assisted-by:` trailer naming the model ID,
 e.g. `Assisted-by: claude-opus-5-5`. Don't add `Co-Authored-By:` or
@@ -247,8 +248,10 @@ e.g. `Assisted-by: claude-opus-5-5`. Don't add `Co-Authored-By:` or
 (`.github/workflows/ci.yml`) runs build, nextest, clippy, `treefmt --ci`,
 `reuse lint` and the swtpm smoke test, and in a second job `nix build` of the
 package and the `app-tests` VM check:
-- `treefmt` — multiplexes `rustfmt` (`*.rs`) and `nixfmt` (`*.nix`). Note
-  `.rustfmt.toml` sets `skip_children = true` and `edition = 2024`.
+- `treefmt` — multiplexes `rustfmt` (`*.rs`) and `nixfmt` (`*.nix`), configured
+  in `.config/treefmt.toml`, which passes rustfmt `skip_children = true`.
+  `.rustfmt.toml` sets `edition = 2024` and has to stay at the root: rustfmt
+  doesn't look in `.config/`.
 - `reuse lint` — every file must carry SPDX license/copyright headers
   (Apache-2.0). New files need the SPDX header block; files that can't carry
   one inline are annotated in `REUSE.toml`.

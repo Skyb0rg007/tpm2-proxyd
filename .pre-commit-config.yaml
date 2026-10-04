@@ -39,7 +39,7 @@ repos:
       - id: commitlint
         name: Commitlint hook
         language: unsupported
-        entry: commitlint --edit
+        entry: commitlint --config .config/commitlintrc.mjs --edit
         pass_filenames: false
         always_run: true
         stages:
